@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "ignore": [".agents/**", ".claude/**", ".codex/**", "graphify-out/**"]
+    "ignore": [".agents/**", ".claude/**", ".codex/**", "graphify-out/**", "**/dist/**"]
   },
   "formatter": {
     "enabled": true,

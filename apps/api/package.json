@@ -1,0 +1,14 @@
+{
+  "name": "@build-my-deck/api",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@build-my-deck/deck-schema": "workspace:*",
+    "@build-my-deck/export": "workspace:*",
+    "@build-my-deck/pipeline": "workspace:*"
+  },
+  "scripts": {
+    "dev": "bun src/index.ts",
+    "build": "tsc --noEmit -p tsconfig.json"
+  }
+}
