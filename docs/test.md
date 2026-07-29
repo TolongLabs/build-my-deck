@@ -342,3 +342,248 @@ Asked plainly: **nothing remains that would force task 4, 5 or 6A outside its de
 **Design (impeccable detect):** installed at `.claude/skills/impeccable/` with Node v24.14.0 available, but **deliberately not run — the delta touches zero UI files.** It is one TypeScript config file (`playwright.config.ts`) and nine JSON manifests; no `.tsx`, `.css`, `.html`, `.vue` or `.svelte` changed, and no rendered UI exists yet. `docs/DESIGN.md` did not change this round, so last round's WCAG recomputation still stands unmodified. Impeccable's first real pass belongs at task 15.
 
 **Smoke test:** `bunx biome check .` ✅ **0** (was ❌) · `bunx tsc --noEmit -p tsconfig.base.json` ✅ **0** · broken-`.tsx` false-green probe ✅ still fails as it should · `bunx playwright test` on both declared future `.pw.ts` locations ✅ 2/2 pass · `bun test` non-collection of `.pw.ts` ✅ including explicit-path worst case · mixed `.test.ts`/`.pw.ts` two-way disjointness ✅ · `.pw.ts` under root + package `tsc` and Biome ✅ · `bun run test` ✅ · `bun run test:e2e` ✅ · `bun run check` ✅ · `bun run lint` ✅ · `bun run build` ✅ all ten workspaces · `bun install --frozen-lockfile` ✅ no changes · cycle detection ✅ none · 18/18 workspace symlinks ✅ · cross-package `tsc` + Bun runtime on all six new edges ✅ · commitlint hook accept/reject ✅ · `PLAYWRIGHT_BROWSERS_PATH` pinning grep ✅ zero hits · deep-subpath-import control probe ✅ blocked as expected (A-12) · secret sweep ✅ 0 hits · working tree restored ✅ byte-identical.
+
+---
+
+## [29/07/26] — Wave 2: Task 4 (`deck-schema`) + Task 5 (`<deck-stage>` Port) + Task 6A (Provider Broker, Run Budget, Hosted Runtime Core)
+
+**Verdict:** Reject with reasons
+
+Three blocking defects, all reproduced independently rather than inferred: a `quota_exhausted` classification gap in the **production** (Qwen/OpenAI-compatible) adapter that was reported as absent; a readiness-gate hang in `<deck-stage>` that never fires `deck-stage:ready`; and D4's "structural refusal of model-authored markup" not actually being structural. Everything else is advisory. The wave is otherwise strong — the run budget, fail-closed config, credential handling and container all verified clean under adversarial probing.
+
+### Verification Re-Run Independently
+
+Every claim below was re-executed by QA, not read from the progress log.
+
+| Check | Command / method | Result |
+| - | - | - |
+| Unit suite determinism | `bun test` ×3 | **80 pass / 2 skip / 0 fail** all three runs, identical counts |
+| Suite makes zero network calls | `unshare -rn bun test` (no network namespace at all) | **80 pass / 2 skip / 0 fail** — proves the default run is fully offline |
+| Live-test gate | `DASHSCOPE_API_KEY`, `QWEN_BASE_URL`, `GEMINI_API_KEY` all confirmed present and non-empty in the Bun runtime | Both live tests still skip; gate is `RUN_LIVE_PROVIDER_TESTS=1` **and** credentials. Correct. No live provider quota spent by QA |
+| Typecheck | `./node_modules/.bin/tsc --noEmit -p tsconfig.base.json` | exit **0** (note: `bunx tsc --noEmit` with no `-p` prints usage and exits 1 — there is no root `tsconfig.json`) |
+| Lint | `bunx biome check .` | 83 files, **0 findings** |
+| Playwright | `bunx playwright test packages/render/test/deck-stage.pw.ts` ×3 | **3 passed** all three runs, no flake |
+| Canvas scale (measured by QA via `DOMMatrixReadOnly` on computed style, not the test's regex) | 1920×1080 / 1280×1080 / 1920×720 / 800×600 / 3840×2160 | max error **0.0001%** (limit 0.5%); transform uniform (`a === d`) |
+| PDF | `page.pdf({preferCSSPageSize:true})` on 3 slides | **3** `/Type /Page`, single MediaBox `0 0 1440 810`, aspect **1.777778** = exact 16:9 |
+| Light DOM | `document.querySelectorAll` (non-piercing) from the page | **2/2 in light DOM, 0 in shadow root**; shadow root holds only `STYLE`, `.stage`, `.tapzones`, `.overlay`. Property genuinely holds |
+| Credential sweep | all 3 live credential values from `process.env` matched against **403** tracked + untracked files | **0 leaks**. No key-shaped strings in source. Only `.env.example` is tracked; `.env`, `.env.development`, `.env.production` all ignored |
+| **Real container** | `docker build` → `docker run` → `curl` | `/api/health` → **HTTP 200** `{"status":"ok"}`; oversized POST → **413** `input_too_large`; `/` → 404 (no web bundle, `apps/web` is still a stub); Chromium present at `/root/.cache/ms-playwright`; **no `.env` baked into the image**; logs contain one line and no secrets |
+| Container fails closed | `docker run` with no env (image sets `NODE_ENV=production`) | Exits 1 with `Production requires finite operator values for: MAX_RUN_TOTAL_TOKENS, MAX_RUN_WALL_MS, MAX_INPUT_BYTES` — correct |
+| `apps/api` → `packages/providers` | `apps/api/package.json` | deps are `deck-schema`, `export`, `pipeline` only. **No direct edge.** ✓ |
+| Lockfile / root config untouched | `git status --porcelain bun.lock package.json tsconfig.base.json biome.json playwright.config.ts packages/*/package.json apps/api/package.json` | **empty** ✓ |
+| Git state | `git log --oneline -1`, `git branch -a` | HEAD still `eda7c7e`; only `main`; no commits, branches or pushes ✓ |
+| Scope discipline | `docs/plan.md` diff | 29 checkbox ticks + **1** prose line (the Playwright-origin Execution Note). Consistent with PM authorship, not PG |
+
+**Design (impeccable detect):** Run, not skipped for form. `npx impeccable detect packages/render/src/deck-stage.css.ts` (Node v24.14.0, relative forward-slash path) → **exit 0, zero output, no findings.** This is the correct result rather than a non-answer: `apps/web` is a one-line stub with no product UI, and the only UI-adjacent file in the wave is the ported deck-stage runtime chrome, which task 5 defines as a behaviour-preserving port of proven prior art. `docs/DESIGN.md` governs editor chrome, which this wave does not build. **No unwaived design findings.**
+
+---
+
+### Blocking Findings
+
+**B-1 — `packages/providers/src/adapters/openai-compatible.ts:15-20` — [high] The production provider has exactly the 429 gap the Gemini fix was made to close, and was reported as not having it.**
+
+```ts
+function mapStatusToErrorKind(status: number): ProviderErrorKind {
+  if (status === 401 || status === 403) return 'auth'
+  if (status === 429) return 'rate_limit'
+  ...
+```
+
+`createQwenAdapter` — the **production** path (`docs/plan.md` D1, settled item 12) — routes every 429 to `rate_limit` unconditionally. The response body is never read, so `quota_exhausted` is unreachable for Qwen/DashScope. `packages/providers/test/openai-compatible.test.ts` has no 429 case at all, so nothing detects it.
+
+The implementer stated this adapter did not share the Gemini gap; it does. Verified by reading `mapStatusToErrorKind` and confirming there is no body inspection and no `quota_exhausted` reference anywhere in the file. The consequence is precisely the one documented in `gemini.ts:36-44`: a drained shared pool is classified as retryable, spins through the broker's repair/backoff path, and never surfaces the Gate-1 typed `shared_pool_exhausted` contract (`apps/api/src/http-errors.ts` declares that code; nothing can ever produce it for Qwen).
+
+→ **Fix:** mirror `classifyGeminiErrorResponse`. On 429, parse the body and map a hard-quota signal to `quota_exhausted`, defaulting to `rate_limit` when the body is absent or unparseable. DashScope and OpenAI-compatible endpoints signal this in `error.code` / `error.type` (`insufficient_quota`, `Throttling.AllocationQuota.*`, arrearage/balance codes) versus throttling (`Throttling.RateQuota`, `rate_limit_exceeded`). Add the two deterministic regression tests the Gemini adapter already has (`gemini.test.ts:69` and `:85` are a good template — those two genuinely cover both branches and I confirmed they do).
+
+**B-2 — `packages/render/src/deck-stage.ts:362-367` — [high] `deck-stage:ready` never fires when an SVG `<image>` finished loading before the element upgraded. Reproduced.**
+
+```ts
+#waitForSvgImage(image: SVGImageElement) {
+  return new Promise<void>((resolve) => {
+    image.addEventListener('error', () => resolve(), { once: true })
+    image.addEventListener('load', () => resolve(), { once: true })
+  })
+}
+```
+
+There is no already-complete check. `<img>` is handled correctly (`.decode()` resolves for an already-decoded image), but `SVGImageElement` has no such property, so if `load` already fired the promise never settles and `#markReadyAfterLayout` awaits forever.
+
+Reproduced in a real browser: same page, 700 ms delay before injecting the component so the `<image>` completes first.
+
+- With an `svg image`: `deck-stage:ready` **did not fire within 4 s**.
+- Identical page without the `svg image`: ready fired.
+
+`deck-stage.pw.ts:145` masks this by *manually dispatching* `new Event('load')` after the component is installed, which is why the suite is green.
+
+This is load-bearing beyond task 5: task 11's `exportPdf` awaits `deck-stage:ready` before printing, and task 12's measurement gates on the same event. Any deck containing an SVG asset — task 7 authors the icon/SVG catalog next wave — would hang the server-side export path holding the Playwright semaphore.
+
+→ **Fix:** resolve immediately when the resource is already complete before attaching listeners. There is no `complete` on `SVGImageElement`, so use a bounded race — e.g. resolve if `image.getBoundingClientRect()`/`currentImage` indicates completion, or simply `Promise.race([loadOrError, timeout])` with a short deterministic timeout. Then change the test to cover the already-loaded case (no synthetic `load` dispatch) alongside the existing pending case.
+
+**B-3 — `packages/deck-schema/src/index.ts:5-12` (used at `:168`, `:182`, `:189`) — [high] D4's structural refusal is not structural: a raw URL, a `data:` URI containing markup, and a path-traversal string are all schema-legal `assetId` / `catalogRef` values.**
+
+```ts
+const nonEmptyString = z.string().min(1)
+const identifier = nonEmptyString
+export const AssetId = identifier
+```
+
+Probed directly against `Element.parse`; every one of these **parses clean**:
+
+| Probe | Result |
+| - | - |
+| `{ kind: 'svg', assetId: 'https://evil.example/x.svg' }` | ACCEPTED |
+| `{ kind: 'svg', assetId: 'data:image/svg+xml,<svg onload=alert(1)>' }` | ACCEPTED |
+| `{ kind: 'icon', catalogRef: '../../../etc/passwd' }` | ACCEPTED |
+| `{ kind: 'image', assetId: 'javascript:alert(1)' }` | ACCEPTED |
+| `{ kind: 'text', style: { typeRef: '"><script>' } }` | ACCEPTED |
+
+The plan's literal verify — "no element kind has any field **typed as** raw markup or a raw URL" — passes on a technicality, and `test/index.test.ts:144` only proves `z.strictObject` rejects an *unknown key* named `markup`, which is a much weaker property than the one D4 requires. But the adopted rule is *"a model can reference art; it can never emit it"* (`docs/plan.md` D4, `docs/trd.md`), and an unconstrained string that reaches a resolver is a reference in name only. Tasks 7 and 8 begin resolving `catalogRef` and `assetId` **next wave**, so this is the last cheap moment to fix it — afterwards it costs a fixture migration.
+
+→ **Fix:** constrain the id primitive to an opaque, scheme-free charset, e.g.
+`const identifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)`.
+That rejects `:`, `/`, `<`, `>` and whitespace, which structurally excludes every URL scheme, `data:` URI and traversal segment in one rule. Keep `Asset.contentHash` on its own looser type (it legitimately contains `:`, per the `sha256:abc` fixture). Add a probe test asserting each row of the table above is rejected.
+
+---
+
+### Advisory Findings — Task 4 (`deck-schema`)
+
+- `packages/deck-schema/src/index.ts:308-311` — [medium] `migrations[0]` stamps `schemaVersion: CURRENT_SCHEMA_VERSION`, not `1`. The design is an ordered chain of `v(n) → v(n+1)` and the loop counter increments by 1 independently. The moment `CURRENT_SCHEMA_VERSION` becomes 2, a v0 document is labelled v2 while `version` is still 1, and `migrations[1]` then runs against an already-relabelled document. Latent today, wrong by construction. → Hardcode each step's target: `0: (d) => ({ ...d, schemaVersion: 1 })`.
+- `packages/deck-schema/src/index.ts:80` + `:84` — [medium] `TextStyle.overrides` is `TypeStyle.partial()`, which includes `fontFamily`. A model can therefore name an arbitrary, unpinned font family on any element. That defeats Finding 2 (pinned, self-hosted, content-addressed OFL fonts) and makes measurement non-deterministic — the validator measures a fallback, the user sees something else. Confirmed accepted by probe. → `TypeStyle.partial().omit({ fontFamily: true })`, or restrict overrides to theme-declared families. (Arbitrary hex in `overrides` is correct and by design; `fontFamily` is not the same case.)
+- `packages/deck-schema/src/index.ts:103` — [medium] `semanticRole: nonEmptyString` is an open string; `semanticRole: 'onload=alert(1)'` parses. D6 rung 1 requires "exactly one `headline` role per slide" and task 8 derives heading levels from this field — both need a closed set. → Make it a `z.enum([...])` now, while there are no fixtures to migrate.
+- `packages/deck-schema/src/index.ts:220-262` — [medium] No deck-level referential integrity. Probed and accepted in one document: an `assetId` absent from `deck.assets`, a `colorRef` absent from `theme.colorRoles`, a dangling `parentId`, an element present in `elements` but in **neither** order array (so it can never render), and an empty `readingOrder`. Style-by-reference is enforced syntactically but nothing guarantees a reference resolves. → Add a `Deck`-level `superRefine` cross-checking asset/type/colour refs and `parentId`, and assert `rootOrder` covers every element key.
+- `packages/deck-schema/test/index.test.ts:110-134` — [low] The order-array test asserts an unknown id only in `rootOrder`; the acceptance criterion says "every id in **both** arrays". The implementation does loop over both (I verified an unknown id in `readingOrder` alone is correctly rejected), so this is a coverage gap, not a defect. → Add the `readingOrder` case.
+- `packages/deck-schema/src/index.ts:77` — [low] The `userOverrides` regex rejects indexed paths: `content.paragraphs.0.runs.1.text` and `content.paragraphs[0].text` both fail. The plan's three examples all pass, so this is correct today, but task 9 records "the property paths each command wrote" for `SetText` — flag it to task 9 before it discovers this at runtime.
+- `packages/deck-schema/src/index.ts:318-350` — [note] The `migrate()` type-narrowing fix is correct: line 328 narrows at **runtime** (`typeof version !== 'number' || !Number.isInteger(version) || version < 0`), it is not a cast. The one remaining `as MigratableDocument` at line 324 follows the object/null/array runtime guard at 319. This resolves the concern raised in the brief.
+- `packages/deck-schema/test/index.test.ts:200-211` — [low] `migrateWithSnapshot`'s returned `original` is never asserted; the test only proves the *input* object is not mutated. The plan's "retaining the original snapshot" deserves a direct assertion.
+
+### Advisory Findings — Task 5 (`<deck-stage>`)
+
+- `packages/render/test/deck-stage.pw.ts:88` — [medium] `await expect(page.locator('[data-element-id]')).toHaveCount(3)` does **not** verify the light-DOM criterion. Playwright locators pierce shadow roots by default; this assertion would pass unchanged if the content were in the shadow root. The plan's verify explicitly names `document.querySelectorAll`. I confirmed independently that the component is correct (2/2 light DOM, 0 shadow), so the property holds — but the test does not test it. → `page.evaluate(() => document.querySelectorAll('[data-element-id]').length)` plus an assertion that `shadowRoot.querySelectorAll('[data-element-id]').length === 0`.
+- `packages/render/test/deck-stage.pw.ts:82` — [low] The silent fallback that masked the original regex bug is **still present**: `...match(/scale\(([^)]+)\)/)?.[1] ?? '0'`, behind two more optional chains (`stage.shadowRoot?`, `canvas?`). The regex is now correct so the test passes, but a future structural miss still reports as "scale 0" rather than "no match". → Throw on no-match instead of defaulting. This was the only fallback of that shape I found in the file; the remaining `?.` uses (line 65, line 45) degrade into a timeout, not a plausible value.
+- `packages/render/test/deck-stage.pw.ts:41-51, 69, 96, 108` — [medium, wave-3 relevant] **The per-file `node:http` origin server should move to `playwright.config.ts`.** It is also applied inconsistently today: only the first test calls `page.goto(origin)`; tests 2 and 3 use bare `setContent()` and survive only because `#restoreIndex`/`#persistIndex` swallow the `SecurityError` in `try {} catch {}`. Tasks 8, 10, 12 and 16 all hit the same wall, so this becomes four-to-five divergent copies. → Add a `webServer` (or a shared fixture) to `playwright.config.ts` so every `.pw.ts` starts from a real origin from one definition. Note this needs a PM plan amendment: `playwright.config.ts` is task 1's file and currently marked "never edited later".
+- `packages/render/src/deck-stage.ts:212-221` — [low] `#syncPrintPageRule` writes a `<style id="deck-stage-print-page">` into the host `document.head`, escaping the shadow encapsulation the rest of the component maintains. Two `<deck-stage>` instances with different `width`/`height` silently fight over one element, last write wins. Acceptable for a single full-screen deck; worth a comment or an instance-scoped id.
+- `packages/render/src/deck-stage.ts:289` — [low] `window.postMessage({ slideIndexChanged }, '*')` broadcasts to any embedder. Same-origin is sufficient for this product. → `window.postMessage(..., location.origin)`.
+- `packages/render/src/deck-stage.ts:8` + `packages/render/src/index.ts:1` — [pass] `DECK_STAGE_VALIDATION_RULES` is an exported constant, re-exported from the barrel, and is the only definition of the string. Task 12 can import one definition. ✓
+- `packages/render/src/deck-stage.ts:1` — [pass] Imports only `./deck-stage.css`. No `@build-my-deck/deck-schema` edge. ✓
+
+### Advisory Findings — Task 6A (Providers / Runtime)
+
+- **`RunBudget` verified correct under adversarial probing.** Client cannot raise the server cap (`1e9`, `Infinity`, `'999999'`, `NaN`, `-1` all clamp to the ceiling; only `10` narrows). Two back-to-back reservations cannot oversubscribe — the second is refused *before* the first reconciles. Post-exhaustion reserve is refused. A past deadline blocks. The constructor rejects `Infinity`, `0` and a non-finite deadline. ✓
+- **Schema linter verified to catch the real emission.** `z.toJSONSchema(z.discriminatedUnion(...), { target: 'draft-7', reused: 'inline' })` emits top-level keys `["$schema","oneOf"]`; `toPortableJsonSchema` rejects it, rejects a union nested one level down (`properties.el:oneOf`), rejects `anyOf` from `z.union`, and rejects the real `Deck` schema. All **before** any network call — `lintPortableSchema` runs at `generate-object.ts:68`, ahead of the reserve and the fetch. ✓
+- `packages/providers/src/run-budget.ts:79-84` — [low] An abandoned reservation permanently burns budget: `reserveForCall(10, 20)` with no `reconcile` leaves `remainingTokens` at 70 forever. `generateObject` always reconciles (both the success path at `:126` and the catch at `:113`), so this is safe today — but `RunBudget` is exported from the barrel, and the next caller that reserves and throws outside a `try/finally` silently drains the run. → Add a `release()`/`[Symbol.dispose]` and reconcile-or-release in a `finally`.
+- `packages/providers/src/generate-object.ts:114` — [low] `if (!(error instanceof ProviderError)) throw error` rethrows an unnormalized error to the caller, contradicting "stages never inspect HTTP status/provider payloads" if any adapter ever misses a normalization path. → Wrap it as `ProviderError('transient', ...)` with the original as `cause`.
+- `packages/providers/test/live-{qwen,gemini}.test.ts` — [low] Neither calls `assertProviderConformance`. The criterion is "both live adapters run the **identical** conformance suite"; today they run a hand-copied near-duplicate of it, which will drift. → Have both call `assertProviderConformance(adapter, modelId)` directly. Also note the asymmetry: the Gemini test tolerates `quota_exhausted`/`rate_limit` as environmental while the Qwen test asserts `result.ok === true` unconditionally.
+- `apps/api/src/secrets.ts:6-9` — [low, judged acceptable] The three vendor env names appear only in a doc comment explaining why they are deliberately absent. `AGENTS.md`'s Critical Do-Not says "any **code path** that names Qwen, Gemini, OpenAI or Anthropic outside the provider-adapter layer" — a comment is not a code path, and the comment is genuinely useful. **Not a defect.** But a grep sweep confirms these are the *only* two matches anywhere outside `packages/providers` in the whole tree, so rewording them out ("the provider credential env names live in `packages/providers`") would let a future automated guard be an exact-match grep with zero allowlist. Recommended, not required.
+- `apps/api/src/concurrency/**`, `apps/api/src/run-budget/limits.ts`, `apps/api/src/secrets.ts` — [medium, honesty of the ticked box] `GenerationSemaphore`, `PlaywrightJobSemaphore`, `resolveRunLimits`, `requireSecret` and `assertNoSecretLeak` are all correct and unit-tested, but **none is referenced from `server.ts` or any route** — the primitives exist as unwired modules. The checkboxes' stated verifies — "excess requests fail fast", "disconnect propagates `AbortSignal` to providers/browser work", "sentinel secrets appear in no log, error, response header/body…" — cannot be demonstrated end-to-end until a generation route exists (task 14) and admission is composed (task 6B). The unit-level behaviour is genuinely satisfied and my credential sweep independently confirms no leak; the boxes simply claim more verification than this wave can carry. Record it rather than re-tick it.
+- `apps/api/src/config.ts:62` — [low] `port` is parsed and validated but never read; the container listens on 3000 via Bun's implicit `PORT` handling (confirmed live). Either wire it into an explicit `Bun.serve` or drop the field.
+- `packages/providers/src/generate-object.ts` — [note] The checkbox says "streaming abort on exhaustion". There is no provider streaming; `complete()` is a single await. The protection is delivered by clamping `maxOutputTokens` to the remaining allowance plus refusing the next reservation, which is sound. Recording that the criterion is met by a different mechanism than its wording implies.
+- `Dockerfile` — [low] `COPY --from=build /app /app` copies the build stage's `node_modules` wholesale; `.dockerignore` omits `test-results/`, `playwright-report/` and `**/test`. Image hygiene only — no secrets (verified: no `.env` in the image).
+- `apps/api/src/server.ts:18,25` — [low, unverifiable this wave] `serveStatic({ root: staticDir })` is given an **absolute** path, while Hono's Bun `serveStatic` composes `root` relative to cwd. Untestable now (`apps/web` is a stub with no `dist`, and I confirmed `/` returns a clean 404 rather than crashing), but this is the same shape as the `/api/health` 404 that a unit test hid. → Verify against a real built bundle the first time `apps/web` produces one.
+
+---
+
+### Wave 3 Readiness (6B, 7, 8 dispatching concurrently)
+
+Barrel ownership is collision-free as the plan now requires: 6B touches no barrel, 7 owns `packages/templates/src/index.ts`, 8 owns `packages/render/src/index.ts`. Three issues must be settled by the PM **before** dispatch, all of them scope/plan corrections rather than code:
+
+- **W-1 — Task 7 is blocked as written, and the obvious fix creates a dependency cycle.** The checkbox *"ship a maximum-capacity fixture per template and fail CI if its declared budget overflows in the pinned renderer"* requires task 8's renderer, but `packages/templates/package.json` declares only `@build-my-deck/deck-schema`. Adding `@build-my-deck/render` would (a) write `bun.lock`, which the plan forbids, and (b) create a **circular workspace dependency**, because `packages/render` already depends on `packages/templates`. → Re-home that check into `packages/render` (which already has the templates edge) or defer it to task 12 in `packages/validate`. Decide before dispatch; otherwise task 7 must stop-and-report mid-wave.
+- **W-2 — Task 8's `Files:` list is incomplete in two ways.** It omits `packages/render/src/index.ts`, the barrel it must grow so tasks 10/11/15 can import `render`/`renderDeckToHtml`/`SlideView` (bare-string `exports` admits no subpaths). It also declares only `render.test.tsx`, while two of its checkboxes say "asserted in Playwright" — it needs a `packages/render/test/render.pw.ts`, which the wave-1 `.pw.ts` amendment granted to tasks 5, 10, 12 and 16 but **not** 8. → Add both to task 8's scope.
+- **W-3 — Task 6B's `Files:` list omits `apps/api/src/server.ts`.** Session, CSRF and admission middleware must be installed on the Hono app, and `server.ts` is currently task 6A's file. No wave-3 peer touches `apps/api`, so this is a scope grant rather than a collision — but without it 6B must either stop-and-report or write out of scope. `apps/api/src/index.ts` may need the same grant.
+- **W-4 — see the advisory on `deck-stage.pw.ts:41-51`.** If task 8 adds a `.pw.ts` before the origin server is centralized into `playwright.config.ts`, this wave produces the second of an eventual five copies.
+- **Otherwise clean.** None of 6B/7/8 needs a root config change, and only task 7 (via W-1) is pushed toward `bun.lock`. 6B needs no new dependency — `bun:sqlite` is built in, and `DATA_DIR` plus the `/data` volume are already in place and verified in the running image. 6A leaves 6B everything it composes on top of (`GenerationSemaphore`, `resolveRunLimits`, `http-errors`, `secrets`), all importable within `apps/api`.
+
+**Smoke test:** `bun test` ×3 → 80 pass / 2 skip / 0 fail, identical; `unshare -rn bun test` → identical (zero network); `tsc --noEmit -p tsconfig.base.json` → 0; `bunx biome check .` → 0 findings across 83 files; `bunx playwright test packages/render/test/deck-stage.pw.ts` ×3 → 3 passed each; `docker build` + `docker run` + `curl /api/health` → HTTP 200; oversized POST → HTTP 413 `input_too_large`; `npx impeccable detect` → 0 findings. No commits, branches or pushes; HEAD remains `eda7c7e`.
+
+### Re-Review — Wave 2 Fix Round (29/07/26)
+
+**Verdict:** Approve with notes
+
+Scoped to the delta since the wave-2 verdict. **All three blocking findings are genuinely fixed**, and each fix's tests were **teeth-checked by QA** — reverted the production change, confirmed the tests fail, restored, confirmed green, verified by checksum that the working tree is byte-identical to how I found it. Nothing new is blocking. Two items need a PM edit before wave 3 dispatches, and one previously-invisible test race is now reproducible on demand.
+
+#### Prior Findings — Verification
+
+| # | Fix | Verified how | Result |
+| - | - | - | - |
+| **B-1** | `classifyOpenAiCompatibleErrorResponse` | 15-case classification probe against the real adapter via stubbed `fetch`; plus teeth-check (collapsed the classifier back to `if (429) return 'rate_limit'`) | **Fixed.** 3 of the 5 new tests fail on revert. Layers behave exactly as documented |
+| **B-2** | `#waitForSvgImage` prefers `decode()` | Teeth-check: removed the `decode()` branch, re-ran → **both** readiness tests time out; restored → 4 passed | **Fixed, and the teeth are real** |
+| **B-3** | `identifier` regex | 32 hostile × 20 id-typed fields + 6 legitimate values, against a **base deck that parses clean** so every rejection is attributable; plus grammar edge cases and a ReDoS timing run; plus teeth-check (reverted to `nonEmptyString`) | **Fixed and applied everywhere.** 0/32 hostile accepted on every field. The B-3 test fails on revert |
+
+**B-1 — the reasoning, judged on its merits.** The asymmetric-risk argument is **the right call for this product**, and the implementation matches it. A drained shared pool misread as transient is an unbounded-spend failure against the one wallet that funds the demo; the inverse is one wrong sentence in the UI. The layer order in code matches the doc comment exactly (documented `type`/`code` → billing vocabulary → `Retry-After` → default `quota_exhausted`), and placing `Retry-After` *below* the vocabulary heuristic is the correct reading of that same asymmetry — many gateways stamp `Retry-After` on all 429s, so promoting it would leak real exhaustion into the expensive direction. The comment flags layer 2 as unverified against a real payload and tells the next reader to revise against evidence rather than revert; that is honest and correct. Probed classifications:
+
+| 429 body / headers | Kind | Assessment |
+| - | - | - |
+| `type: insufficient_quota` | `quota_exhausted` | correct |
+| `code: insufficient_quota` (code-only) | `quota_exhausted` | correct — untested but working |
+| `type: rate_limit_exceeded` | `rate_limit` | correct |
+| OpenAI RPM message + `Retry-After: 20` | `rate_limit` | correct |
+| `code: Throttling.AllocationQuota.PostPaidBillOverdue` | `quota_exhausted` | correct |
+| **`code: Throttling.RateQuota`** (+ or − `Retry-After`) | **`quota_exhausted`** | **see advisory R-1** |
+| unparseable body, no header | `quota_exhausted` | correct, deliberate |
+| `Retry-After: 0` / `""` / HTTP-date | `quota_exhausted` | correct (`Number()` yields `0`/`NaN`, both fail `> 0`) |
+
+**Can any path still reach `rate_limit` when the body clearly indicates exhaustion?** Exactly one: `{ type: 'rate_limit_exceeded', message: 'You exceeded your current quota…' }` → `rate_limit`. This is defensible — the asymmetric-risk default governs the *unknown* case, not a case where the vendor's documented, highest-confidence field explicitly contradicts a substring, and OpenAI never emits that pairing. Recorded, not a finding.
+
+**Test coverage of B-1.** Each of the four layers has a dedicated test and they are not decorative: reverting the classifier fails the three positive-direction tests. The two that survive revert (`rate_limit_exceeded`, `Retry-After`) are negative-direction assertions and pass trivially under a blanket `rate_limit` — expected, not a gap. Minor: the vocabulary test sets *both* a matching `message` and a matching `code`, so it does not isolate which arm fired, and the `code: 'insufficient_quota'` arm has no test (verified working by probe).
+
+**B-2 — the surrounding claims, each checked rather than accepted.**
+
+- Already-loaded-SVG test uses **no synthetic event dispatch** — it awaits the element's own real `decode()` before installing the component. ✓ Confirmed by reading and by the revert (it times out, which a faked `load` would have masked).
+- Light-DOM assertion is now **non-piercing** — `page.evaluate` + `document.querySelectorAll`, plus an explicit `shadowRoot…length === 0`. ✓
+- `?? '0'` is gone; the miss now throws with the actual transform string. ✓
+- **The font and `<img>` gates genuinely do not share the defect.** Verified, not taken: `document.fonts.ready` is a `FontFaceSet` promise that is already-settled when no fonts are pending, and `HTMLImageElement.decode()` resolves immediately for an already-decoded image and rejects for a broken one — both self-completing. The raw-listener pattern was the *only* non-self-completing gate, and it is now the fallback branch. Note the fallback branch is no longer exercised by any test (the pending-case test stubs `SVGImageElement.prototype.decode`), so if `decode()` ever disappears the original hang returns silently.
+
+#### New Findings
+
+**R-1 — `packages/providers/src/adapters/openai-compatible.ts:64` — [low] The billing-vocabulary regex swallows DashScope's documented *transient* throttling code, because it contains the substring "Quota".**
+
+`Throttling.RateQuota` is DashScope's rate-limit (RPM/TPM) code and matches `/quota|arrearage|insufficient|balance/i` at layer 2, so it returns `quota_exhausted` and the `Retry-After` signal at layer 3 never runs — confirmed by probe, with and without a `Retry-After: 3` header. Consequence: for the production Qwen path, `rate_limit` is effectively reachable only via the literal OpenAI `rate_limit_exceeded` type. This fails in the **cheap** direction, so it does not contradict the adopted rationale and is **not blocking** — but it means the adapter will report a pool exhaustion for ordinary throttling, which is a user-visible wrong message on the most likely real 429. → One line before the vocabulary check: `if (/^Throttling\.Rate/i.test(code ?? '') ) return 'rate_limit'`, or exclude `RateQuota` from the vocabulary match. Add it to the probe table when a real DashScope 429 is finally captured.
+
+**R-2 — `packages/providers/src/adapters/openai-compatible.ts:74-75` and `adapters/gemini.ts:56-57` — [low] HTTP 402 Payment Required is classified `transient`, which is the same failure the 429 work just eliminated.** Probed: `402` with `{"error":{"message":"insufficient balance"}}` → `transient`; `400` and `404` likewise. A 402 is an unambiguous hard billing failure and belongs in `quota_exhausted` by the exact asymmetric-risk argument used for 429; a 400/404 is permanently unsatisfiable and marking it retryable invites a repair loop that can never succeed. Pre-existing in both adapters, newly surfaced by following the fix's own reasoning outward. → `if (status === 402) return 'quota_exhausted'`, and map other non-429 4xx to a non-retryable kind.
+
+**R-3 — `packages/providers/src/adapters/gemini.ts:54` — [low] The two adapters now embody opposite defaults for an unparseable 429.** OpenAI-compatible defaults to `quota_exhausted` with a paragraph explaining why; Gemini still defaults to `rate_limit`. Each is individually defensible (Google's `error.status` envelope is reliable), but the Gemini key is the one with a real free-tier daily quota, and an unexplained divergence in sibling adapters is how a policy quietly stops being a policy. → Either align Gemini's default or add one line to `docs/decisions.md` recording that the default is per-adapter and why.
+
+**R-4 — `packages/render/test/deck-stage.pw.ts:67-77` — [medium] The reported "isolated flake" is a real, reproducible synchronization gap in the test — not environmental noise, and not the readiness gate. Mechanism isolated.**
+
+Reproduced first as a Playwright failure (`--repeat-each=10 --workers=8` under full CPU saturation: 1 failure in 40 at line 77), then isolated deterministically outside Playwright: driving the real component through the three viewports 60 times and reading `canvas.style.transform` immediately after `setViewportSize`, **10/60 reads returned the previous viewport's scale** (e.g. `0.666667` where `1` was expected) — on an *unloaded* machine.
+
+Cause: `#fit()` runs from a `window` `resize` listener (`deck-stage.ts:72,111`). `page.setViewportSize()` resolves when the browser has applied the size, which is not the same instant the page's `resize` handler has run. The test reads the transform with no wait, so it sometimes samples the pre-resize value. **The component is correct** — it always re-fits; the assertion just samples too early. The implementer's "did not reproduce in 15+ reruns" is consistent with a ~1-in-40 event and was a reasonable read, but the mechanism is identifiable by inspection and this will produce intermittent CI reds. Pre-existing (the assertion is unchanged from wave 2 — my earlier 3 clean runs simply did not hit it), not a regression from this round.
+
+→ **Fix:** poll instead of sampling — `await expect.poll(() => page.locator('deck-stage').evaluate(readScale)).toBeCloseTo(expected, 3)`, or `page.waitForFunction` on the expected transform. Worth fixing before wave 3, because tasks 8/10/12/16 will copy this file's shape.
+
+**R-5 — `packages/deck-schema/src/index.ts:107, 26, 46-47, 80` — [low, previously raised] The grammar is applied to every *id-typed* field, but four model-populatable string fields remain unconstrained.** Probed: `semanticRole`, `TypeStyle.fontFamily`, `Asset.mediaType`, `Origin.sourceRefs[]`, `Asset.contentHash` and `metadata.title` each accept **31 of 32** hostile values (only the empty string is rejected). `contentHash` and `title` are deliberate and fine. `semanticRole` and `fontFamily` are the two I raised as advisories last round and they remain open — correctly, since they were outside B-3's scope. `mediaType` is a new observation of the same shape. → Unchanged recommendation: `semanticRole` → `z.enum([...])` before task 8 derives heading levels from it; `fontFamily` → omit from `overrides`; `mediaType` → a small `z.enum` of the media types the catalog actually ships.
+
+**R-6 — task 7 / task 8 in `docs/plan.md` — [medium, blocks clean wave-3 dispatch] W-1 resolved the dependency cycle but left the checkbox in the wrong task and created a same-wave ordering dependency.** See "Wave 3 Readiness" below.
+
+#### W-1 to W-4 — Plan Corrections, Verified
+
+- **W-2 — verified.** Task 8's `Files:` now carries `packages/render/src/index.ts` and `packages/render/test/render.pw.ts`, both with the reason inline. ✓
+- **W-3 — verified.** Task 6B's `Files:` now carries `apps/api/src/server.ts` and `apps/api/src/index.ts`, marked as a grant from 6A. No wave-3 peer touches `apps/api`. ✓
+- **W-4 — verified end to end.** `playwright.config.ts` now sets `baseURL` + a `webServer`. Confirmed: all four tests `page.goto('/')` — the two that previously survived on a swallowed `SecurityError` now genuinely navigate (test 1's `localStorage.getItem` assertion would throw on an opaque origin, and it passes; test 2's `goto('/')` would throw "Invalid URL" without `baseURL`). **No process leaks**: checked `ss -ltn` and `pgrep` before and after 7 suite runs plus a 48-run stress — port 4173 free, no orphan `bun` server. Two notes: (a) `baseURL` grants every future test the *ability* to reach a real origin, but each test must still call `page.goto('/')` — a `test.beforeEach` or a fixture would make it truly by-default; (b) port 4173 is fixed and `reuseExistingServer` is on outside CI, so two git worktrees running Playwright at once share one server — harmless (it serves a constant blank page) but worth knowing given this project's one-PM-per-worktree model.
+- **W-1 — the cycle is genuinely avoided, but the correction is incomplete.** ✓ `packages/render/package.json` already declares **both** `@build-my-deck/deck-schema` and `@build-my-deck/templates`, and `packages/templates` declares only `deck-schema` — so `render` is indeed the only package holding both edges, there is no cycle, and task 8 adding `packages/render/test/template-capacity.test.ts` needs **no `bun.lock` write**. Confirmed by reading all four `package.json` files and by `git status --porcelain bun.lock` being empty. **But two things did not follow the re-home** (finding R-6):
+  1. Task 7 still carries the checkbox verbatim — *"**Ship a maximum-capacity fixture per template and fail CI if its declared budget overflows in the pinned renderer** → verify: a template whose budget is deliberately raised by 20% fails the test"* — and its acceptance criteria still say *"every max-capacity fixture renders without overflow"*. A PG dispatched with `Files: packages/templates/**` cannot render, so it will write out of scope or stop-and-report — the exact failure W-1 exists to prevent. Task 8, meanwhile, has the **file in scope but no checkbox** telling it what to assert.
+  2. **The two tasks run concurrently in wave 3.** "Task 7 authors the fixtures; task 8 asserts them" is not workable inside one wave: task 8's test must import a catalog task 7 is creating at the same moment. It will either fail (blocking task 8) or pass vacuously over an empty catalog (a fake green). Task 8's `Depends on:` is still `4, 5` — the new dependency on 7 is undeclared.
+
+#### Wave 3 Readiness — One Plan Edit Short
+
+**6B and 8 are clear to dispatch concurrently. Task 7 is clear as data-authoring only.** Nothing forces a task outside its `Files:`, onto `bun.lock`, or onto a root config — verified: barrel ownership is still collision-free (6B touches none, 7 owns `packages/templates/src/index.ts`, 8 owns `packages/render/src/index.ts`), `apps/api` is 6B's alone, and every dependency edge 6B/7/8 needs already exists. The single remaining blocker is the W-1 residual, and it is a PM edit, not code:
+
+- Reword task 7's checkbox to author the max-capacity **fixture data only** (drop "fail CI … in the pinned renderer" and the 20%-overflow verify), and adjust its acceptance criteria to match.
+- Add the assertion as an explicit checkbox on task 8, and **either** declare `Depends on: 4, 5, 7` and sequence it after 7 lands, **or** move `template-capacity.test.ts` out of wave 3 entirely — task 12 (`packages/validate`) is the natural home and the plan already floats it. The second option keeps the wave genuinely concurrent.
+
+Also worth folding: the older *"Playwright Pages Need A Real Origin"* execution note still describes task 5's per-file `node:http` fixture as current; W-4 superseded it.
+
+#### Scope, Git Discipline, Secrets
+
+| Check | Result |
+| - | - |
+| Files touched by the three concurrent fixes | `openai-compatible.ts` + its test; `deck-stage.ts` + `deck-stage.pw.ts` + `playwright.config.ts`; `deck-schema/src/index.ts` + its test. **Disjoint, minimal, no overlap** |
+| Scope creep into advisories | **None.** Spot-checked every advisory I raised — `postMessage('*')`, `migrations[0]`, `semanticRole`, `TypeStyle.partial()`, the `generate-object` rethrow, the shared print-style id — all **unchanged**. Each agent fixed exactly its blocker |
+| `docs/` authorship | `docs/plan.md` (22:59) and `docs/progress.md` (22:36) were last written **before** every source edit of the fix round (23:00–23:16). **No implementing agent wrote to `docs/`** |
+| Root config / lockfile | `bun.lock`, `package.json`, `tsconfig.base.json`, `biome.json`, every `packages/*/package.json` and `apps/*/package.json` — **all untouched**. `playwright.config.ts` is modified and is the one PM-authorized root write, recorded in the plan |
+| Git state | HEAD still **`eda7c7e`**; only `main`; no stashes, branches, commits or pushes |
+| Secret sweep | All 3 live credential values matched against **403** tracked + untracked files → **0 leaks**. `.env` ignored via `.gitignore:14` |
+| Working tree after QA | Byte-identical to how I found it — all three teeth-check reverts restored and **verified by `sha256sum -c`**; my own probe scripts live in the scratchpad, not the repo; `test-results/` removed |
+
+**Design (impeccable detect):** `npx impeccable detect packages/render/src/deck-stage.ts packages/render/src/deck-stage.css.ts playwright.config.ts` (Node v24.14.0, relative forward-slash paths) → **exit 0, zero output, no findings.** This round changed no styling surface — `deck-stage.css.ts` is untouched since wave 2 and the only render edit is a promise in the readiness gate. **No unwaived design findings.**
+
+**Smoke test:** `bun test` ×4 → **87 pass / 2 skip / 0 fail**, identical every run (up from 80 — 5 new provider tests, 2 new schema tests); `unshare -rn bun test` (no network namespace) → identical, so the default run is still fully offline; live tests still skip with all three real credentials present and non-empty in the Bun runtime (`RUN_LIVE_PROVIDER_TESTS` unset) — **no provider quota spent by QA**; `tsc --noEmit -p tsconfig.base.json` → exit **0**; `biome check .` → **83 files, 0 findings**; `playwright test` ×7 → **4 passed** each, no leaked server; `--repeat-each=10 --workers=8` under full CPU saturation → 1 failure in 40, diagnosed as R-4. Teeth-checks: reverting B-1 → 3 fail; reverting B-2 → 2 time out; reverting B-3 → 1 fails; all restored and checksum-verified.

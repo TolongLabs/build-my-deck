@@ -1,6 +1,6 @@
-import { Hono } from 'hono'
-import { mountApiRoutes } from './routes'
+import { loadConfig } from './config'
+import { createApp } from './server'
 
-const app = mountApiRoutes(new Hono())
+const app = createApp(loadConfig())
 
 export default app
