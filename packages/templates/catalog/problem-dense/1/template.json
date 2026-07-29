@@ -1,0 +1,36 @@
+{
+  "id": "problem-dense",
+  "version": "1",
+  "intents": ["problem", "pain-point", "motivation"],
+  "slots": {
+    "eyebrow": {
+      "accepts": ["text"],
+      "budget": { "maxChars": 20, "maxLines": 1 },
+      "optional": true,
+      "priority": 4,
+      "frame": { "x": 120, "y": 120, "w": 600, "h": 36, "rotation": 0 },
+      "style": { "typeRef": "eyebrow" }
+    },
+    "headline": {
+      "accepts": ["text"],
+      "budget": { "maxChars": 60, "maxLines": 2 },
+      "optional": false,
+      "priority": 1,
+      "frame": { "x": 120, "y": 170, "w": 1680, "h": 180, "rotation": 0 },
+      "style": { "typeRef": "headline" }
+    },
+    "body": {
+      "accepts": ["text"],
+      "budget": { "maxChars": 640, "maxLines": 16, "maxItems": 8 },
+      "optional": false,
+      "priority": 2,
+      "frame": { "x": 120, "y": 400, "w": 1680, "h": 460, "rotation": 0 },
+      "style": { "typeRef": "body" }
+    }
+  },
+  "fixedElements": [],
+  "safeAreas": { "margin": 120 },
+  "collisionGroups": [],
+  "compatibleVariants": ["problem"],
+  "manifestVisible": false
+}

@@ -1,0 +1,27 @@
+{
+  "id": "full-bleed-visual",
+  "version": "1",
+  "intents": ["visual", "screenshot", "demo"],
+  "slots": {
+    "visual": {
+      "accepts": ["image", "screenshot"],
+      "budget": {},
+      "optional": false,
+      "priority": 2,
+      "frame": { "x": 0, "y": 0, "w": 1920, "h": 1080, "rotation": 0 },
+      "style": { "colorRef": "panel-border" }
+    },
+    "caption": {
+      "accepts": ["text"],
+      "budget": { "maxChars": 110, "maxLines": 2 },
+      "optional": true,
+      "priority": 1,
+      "frame": { "x": 120, "y": 860, "w": 1000, "h": 100, "rotation": 0 },
+      "style": { "typeRef": "caption" }
+    }
+  },
+  "fixedElements": [],
+  "safeAreas": { "margin": 120 },
+  "collisionGroups": [{ "id": "caption-over-visual", "memberIds": ["caption", "visual"], "severity": "informational" }],
+  "compatibleVariants": []
+}

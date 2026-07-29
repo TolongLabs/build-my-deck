@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-export const CURRENT_SCHEMA_VERSION = 1
+export const CURRENT_SCHEMA_VERSION = 2
 
 const nonEmptyString = z.string().min(1)
 /**
@@ -34,11 +34,45 @@ export const TypeStyle = z.strictObject({
     .optional()
 })
 
+/**
+ * Mirrors `packages/templates/src/schema.ts`'s `ComponentStyle` shape — kept
+ * in lockstep deliberately rather than imported, since `deck-schema` must not
+ * depend on `templates` (the dependency runs the other way). A design
+ * system's `panel`/`badge`/`stat` component style is cited by role from an
+ * element via `ComponentStyleRef`, never inlined as raw colors.
+ */
+export const ComponentStyleName = z.enum(['panel', 'badge', 'stat'])
+export type ComponentStyleName = z.infer<typeof ComponentStyleName>
+
+export const ComponentStyle = z.strictObject({
+  backgroundRef: identifier,
+  borderRef: identifier,
+  textRef: identifier
+})
+export type ComponentStyle = z.infer<typeof ComponentStyle>
+
+/**
+ * Mirrors `packages/templates/src/schema.ts`'s bounded effects vocabulary
+ * (halftone, hard shadow, editorial rule). An element cites an effect by
+ * `effectRef`; only `intensity` may be tuned per element, and only inside
+ * `overrides` — the effect's `colorRef` always resolves through the theme.
+ */
+export const EffectName = z.enum(['halftone', 'hard-shadow', 'editorial-rule'])
+export type EffectName = z.infer<typeof EffectName>
+
+export const EffectSpec = z.strictObject({
+  colorRef: identifier,
+  intensity: finiteNumber.min(0).max(1)
+})
+export type EffectSpec = z.infer<typeof EffectSpec>
+
 export const ThemeSpec = z.strictObject({
   id: identifier,
   version: identifier,
   typeStyles: z.record(identifier, TypeStyle),
-  colorRoles: z.record(identifier, z.string().regex(/^#[0-9a-fA-F]{6}$/))
+  colorRoles: z.record(identifier, z.string().regex(/^#[0-9a-fA-F]{6}$/)),
+  componentStyles: z.record(ComponentStyleName, ComponentStyle).optional(),
+  effects: z.record(EffectName, EffectSpec).optional()
 })
 
 export const Asset = z.strictObject({
@@ -101,6 +135,21 @@ export const ColorStyle = z.strictObject({
     .optional()
 })
 
+/** Cites a theme effect by role; only `intensity` may be tuned, and only inside `overrides`. */
+export const EffectStyle = z.strictObject({
+  effectRef: EffectName,
+  overrides: z
+    .strictObject({
+      intensity: finiteNumber.min(0).max(1).optional()
+    })
+    .optional()
+})
+
+/** Cites a theme component style (panel/badge/stat) by role — never a raw background/border/text value. */
+export const ComponentStyleRef = z.strictObject({
+  componentRef: ComponentStyleName
+})
+
 const elementBaseFields = {
   id: ElementId,
   parentId: ElementId.optional(),
@@ -110,7 +159,9 @@ const elementBaseFields = {
   visible: z.boolean(),
   locked: z.boolean(),
   priority: z.number().int(),
-  origin: Origin.default({ userOverrides: [] })
+  origin: Origin.default({ userOverrides: [] }),
+  effect: EffectStyle.optional(),
+  component: ComponentStyleRef.optional()
 }
 
 export const TextRun = z.strictObject({
@@ -291,6 +342,8 @@ export type Frame = z.infer<typeof Frame>
 export type Origin = z.infer<typeof Origin>
 export type TextStyle = z.infer<typeof TextStyle>
 export type ColorStyle = z.infer<typeof ColorStyle>
+export type EffectStyle = z.infer<typeof EffectStyle>
+export type ComponentStyleRef = z.infer<typeof ComponentStyleRef>
 export type TextRun = z.infer<typeof TextRun>
 export type TextParagraph = z.infer<typeof TextParagraph>
 export type DiagramSpec = z.infer<typeof DiagramSpec>
@@ -309,9 +362,52 @@ export type Deck = z.infer<typeof Deck>
 type MigratableDocument = Record<string, unknown>
 type Migration = (document: MigratableDocument) => MigratableDocument
 
+function isRecord(value: unknown): value is MigratableDocument {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function firstKey(value: unknown, fallback: string): string {
+  if (!isRecord(value)) return fallback
+  const [first] = Object.keys(value)
+  return first ?? fallback
+}
+
+/**
+ * v1 themes carry no `componentStyles`/`effects`. The conservative default
+ * points every role at whichever color/type role the theme already declares
+ * first, so a resolved reference is never dangling, and sets every effect's
+ * intensity to 0 — a migrated deck renders with no new visual effect at all.
+ */
+function conservativeThemeDefaults(theme: MigratableDocument) {
+  const colorRef = firstKey(theme.colorRoles, 'ink')
+  const textRef = firstKey(theme.typeStyles, 'body')
+  const componentStyle = { backgroundRef: colorRef, borderRef: colorRef, textRef }
+  return {
+    componentStyles: { panel: componentStyle, badge: componentStyle, stat: componentStyle },
+    effects: {
+      halftone: { colorRef, intensity: 0 },
+      'hard-shadow': { colorRef, intensity: 0 },
+      'editorial-rule': { colorRef, intensity: 0 }
+    }
+  }
+}
+
 const migrations: Record<number, Migration> = {
-  0: (document) => ({ ...document, schemaVersion: CURRENT_SCHEMA_VERSION }),
-  1: (document) => document
+  0: (document) => ({ ...document, schemaVersion: 1 }),
+  1: (document) => {
+    const next: MigratableDocument = { ...document, schemaVersion: 2 }
+    if (isRecord(next.theme)) {
+      const theme = next.theme
+      const defaults = conservativeThemeDefaults(theme)
+      next.theme = {
+        ...theme,
+        componentStyles: theme.componentStyles ?? defaults.componentStyles,
+        effects: theme.effects ?? defaults.effects
+      }
+    }
+    return next
+  },
+  2: (document) => document
 }
 
 export type MigrationResult = {

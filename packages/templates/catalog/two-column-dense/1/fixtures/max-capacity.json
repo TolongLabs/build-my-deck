@@ -1,0 +1,38 @@
+{
+  "slots": {
+    "eyebrow": {
+      "kind": "text",
+      "paragraphs": [{ "runs": [{ "text": "Inside The Pipeline", "marks": [] }] }]
+    },
+    "headline": {
+      "kind": "text",
+      "paragraphs": [{ "runs": [{ "text": "From A Messy README To A Polished, Editable Deck", "marks": [] }] }]
+    },
+    "body": {
+      "kind": "text",
+      "paragraphs": [
+        {
+          "runs": [
+            {
+              "text": "Paste your Devpost draft, a README and a handful of screenshots, and the pipeline extracts your real narrative rather than inventing one. It chooses from a curated catalog of eight layout templates and three hand-designed art directions, then binds your content into typed slots with a measured capacity budget declared before a single token is generated.",
+              "marks": []
+            }
+          ]
+        },
+        {
+          "runs": [
+            {
+              "text": "Nothing overflows, because layout selection happens before rendering, not after. Every element stays exactly as editable as if you had placed it yourself, with full provenance back to the source paragraph, and you can regenerate or reskin any single slide without losing edits you already made.",
+              "marks": []
+            }
+          ]
+        }
+      ]
+    },
+    "visual": {
+      "kind": "image",
+      "assetId": "asset-pipeline-diagram-detail",
+      "alt": "Detailed diagram of the intake, layout and repair stages"
+    }
+  }
+}

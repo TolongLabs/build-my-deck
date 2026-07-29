@@ -1,0 +1,53 @@
+{
+  "id": "cover",
+  "version": "1",
+  "intents": ["opening", "title", "cover"],
+  "slots": {
+    "eyebrow": {
+      "accepts": ["text"],
+      "budget": { "maxChars": 28, "maxLines": 1 },
+      "optional": true,
+      "priority": 3,
+      "frame": { "x": 120, "y": 150, "w": 700, "h": 40, "rotation": 0 },
+      "style": { "typeRef": "eyebrow" }
+    },
+    "headline": {
+      "accepts": ["text"],
+      "budget": { "maxChars": 40, "maxLines": 2 },
+      "optional": false,
+      "priority": 1,
+      "frame": { "x": 120, "y": 220, "w": 1100, "h": 520, "rotation": 0 },
+      "style": { "typeRef": "headline-lg" }
+    },
+    "subtitle": {
+      "accepts": ["text"],
+      "budget": { "maxChars": 130, "maxLines": 2 },
+      "optional": true,
+      "priority": 2,
+      "frame": { "x": 120, "y": 790, "w": 1000, "h": 110, "rotation": 0 },
+      "style": { "typeRef": "subtitle" }
+    },
+    "visual": {
+      "accepts": ["image", "screenshot"],
+      "budget": {},
+      "optional": true,
+      "priority": 4,
+      "frame": { "x": 1280, "y": 120, "w": 520, "h": 840, "rotation": 0 },
+      "style": { "colorRef": "panel-border" }
+    }
+  },
+  "fixedElements": [
+    {
+      "id": "rule-baseline",
+      "kind": "shape",
+      "shape": "line",
+      "frame": { "x": 120, "y": 900, "w": 1100, "h": 4, "rotation": 0 },
+      "style": { "colorRef": "rule" },
+      "zOrder": "front",
+      "effectRef": "editorial-rule"
+    }
+  ],
+  "safeAreas": { "margin": 120 },
+  "collisionGroups": [],
+  "compatibleVariants": []
+}

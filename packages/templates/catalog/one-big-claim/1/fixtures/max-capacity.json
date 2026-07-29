@@ -1,0 +1,25 @@
+{
+  "slots": {
+    "eyebrow": {
+      "kind": "text",
+      "paragraphs": [{ "runs": [{ "text": "The One Stat That Matters", "marks": [] }] }]
+    },
+    "headline": {
+      "kind": "text",
+      "paragraphs": [{ "runs": [{ "text": "80% Of Hackathon Decks Are Finished In The Final Hour", "marks": [] }] }]
+    },
+    "subtitle": {
+      "kind": "text",
+      "paragraphs": [
+        {
+          "runs": [
+            {
+              "text": "We asked forty teams exactly when their slides were finished. Most said: during the demo queue.",
+              "marks": []
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

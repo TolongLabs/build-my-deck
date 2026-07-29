@@ -1,0 +1,55 @@
+{
+  "id": "two-column-dense",
+  "version": "1",
+  "intents": ["explanation", "two-column", "text-visual"],
+  "slots": {
+    "eyebrow": {
+      "accepts": ["text"],
+      "budget": { "maxChars": 20, "maxLines": 1 },
+      "optional": true,
+      "priority": 4,
+      "frame": { "x": 120, "y": 120, "w": 600, "h": 36, "rotation": 0 },
+      "style": { "typeRef": "eyebrow" }
+    },
+    "headline": {
+      "accepts": ["text"],
+      "budget": { "maxChars": 56, "maxLines": 2 },
+      "optional": false,
+      "priority": 1,
+      "frame": { "x": 120, "y": 170, "w": 1000, "h": 140, "rotation": 0 },
+      "style": { "typeRef": "headline" }
+    },
+    "body": {
+      "accepts": ["text"],
+      "budget": { "maxChars": 820, "maxLines": 20 },
+      "optional": false,
+      "priority": 2,
+      "frame": { "x": 120, "y": 340, "w": 1000, "h": 520, "rotation": 0 },
+      "style": { "typeRef": "body" }
+    },
+    "visual": {
+      "accepts": ["image", "screenshot"],
+      "budget": {},
+      "optional": true,
+      "priority": 3,
+      "frame": { "x": 1180, "y": 170, "w": 620, "h": 690, "rotation": 0 },
+      "style": { "colorRef": "panel-border" }
+    }
+  },
+  "fixedElements": [
+    {
+      "id": "panel-bg-visual",
+      "kind": "shape",
+      "shape": "rectangle",
+      "frame": { "x": 1160, "y": 150, "w": 660, "h": 730, "rotation": 0 },
+      "style": { "colorRef": "panel-bg", "componentRef": "panel" },
+      "zOrder": "behind"
+    }
+  ],
+  "safeAreas": { "margin": 120 },
+  "collisionGroups": [
+    { "id": "visual-panel", "memberIds": ["panel-bg-visual", "visual"], "severity": "informational" }
+  ],
+  "compatibleVariants": ["two-column"],
+  "manifestVisible": false
+}

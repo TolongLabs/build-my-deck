@@ -1,0 +1,47 @@
+{
+  "id": "one-big-claim",
+  "version": "1",
+  "intents": ["claim", "thesis", "big-number"],
+  "slots": {
+    "eyebrow": {
+      "accepts": ["text"],
+      "budget": { "maxChars": 26, "maxLines": 1 },
+      "optional": true,
+      "priority": 3,
+      "frame": { "x": 120, "y": 160, "w": 700, "h": 40, "rotation": 0 },
+      "style": { "typeRef": "eyebrow" }
+    },
+    "headline": {
+      "accepts": ["text"],
+      "budget": { "maxChars": 60, "maxLines": 2 },
+      "optional": false,
+      "priority": 1,
+      "frame": { "x": 120, "y": 280, "w": 1680, "h": 480, "rotation": 0 },
+      "style": { "typeRef": "headline-lg" }
+    },
+    "subtitle": {
+      "accepts": ["text"],
+      "budget": { "maxChars": 120, "maxLines": 2 },
+      "optional": true,
+      "priority": 2,
+      "frame": { "x": 120, "y": 800, "w": 1200, "h": 120, "rotation": 0 },
+      "style": { "typeRef": "subtitle" }
+    }
+  },
+  "fixedElements": [
+    {
+      "id": "claim-decor",
+      "kind": "shape",
+      "shape": "ellipse",
+      "frame": { "x": 1400, "y": 120, "w": 420, "h": 420, "rotation": 0 },
+      "style": { "colorRef": "decor" },
+      "zOrder": "behind",
+      "effectRef": "halftone"
+    }
+  ],
+  "safeAreas": { "margin": 120 },
+  "collisionGroups": [
+    { "id": "decor-headline-overlap", "memberIds": ["headline", "claim-decor"], "severity": "informational" }
+  ],
+  "compatibleVariants": []
+}

@@ -1,0 +1,30 @@
+{
+  "slots": {
+    "eyebrow": {
+      "kind": "text",
+      "paragraphs": [{ "runs": [{ "text": "How It All Works", "marks": [] }] }]
+    },
+    "headline": {
+      "kind": "text",
+      "paragraphs": [{ "runs": [{ "text": "From A Messy README To A Polished Six-Slide Deck", "marks": [] }] }]
+    },
+    "body": {
+      "kind": "text",
+      "paragraphs": [
+        {
+          "runs": [
+            {
+              "text": "Paste your Devpost draft, a README and a handful of screenshots. The pipeline extracts your real narrative, chooses from a curated catalog of eight layout templates, and binds your content into typed slots with a measured capacity budget declared before a single slide is rendered. Nothing overflows, because the layout is chosen to fit, and every element stays exactly as editable as if you had placed it yourself, with provenance back to the paragraph it came from.",
+              "marks": []
+            }
+          ]
+        }
+      ]
+    },
+    "visual": {
+      "kind": "image",
+      "assetId": "asset-pipeline-diagram",
+      "alt": "Diagram of the intake-to-slide generation pipeline"
+    }
+  }
+}

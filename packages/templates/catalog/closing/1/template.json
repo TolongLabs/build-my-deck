@@ -1,0 +1,53 @@
+{
+  "id": "closing",
+  "version": "1",
+  "intents": ["closing", "thank-you", "contact"],
+  "slots": {
+    "eyebrow": {
+      "accepts": ["text"],
+      "budget": { "maxChars": 24, "maxLines": 1 },
+      "optional": true,
+      "priority": 3,
+      "frame": { "x": 120, "y": 300, "w": 600, "h": 40, "rotation": 0 },
+      "style": { "typeRef": "eyebrow" }
+    },
+    "headline": {
+      "accepts": ["text"],
+      "budget": { "maxChars": 50, "maxLines": 2 },
+      "optional": false,
+      "priority": 1,
+      "frame": { "x": 120, "y": 380, "w": 1140, "h": 220, "rotation": 0 },
+      "style": { "typeRef": "headline" }
+    },
+    "subtitle": {
+      "accepts": ["text"],
+      "budget": { "maxChars": 100, "maxLines": 2 },
+      "optional": true,
+      "priority": 2,
+      "frame": { "x": 120, "y": 620, "w": 1000, "h": 100, "rotation": 0 },
+      "style": { "typeRef": "subtitle" }
+    },
+    "quote": {
+      "accepts": ["quote"],
+      "budget": { "maxChars": 200, "maxLines": 6 },
+      "optional": true,
+      "priority": 4,
+      "frame": { "x": 1300, "y": 280, "w": 480, "h": 400, "rotation": 0 },
+      "style": { "typeRef": "quote", "secondaryTypeRef": "quote-attribution" }
+    }
+  },
+  "fixedElements": [
+    {
+      "id": "rule-baseline",
+      "kind": "shape",
+      "shape": "line",
+      "frame": { "x": 120, "y": 900, "w": 1680, "h": 4, "rotation": 0 },
+      "style": { "colorRef": "rule" },
+      "zOrder": "front",
+      "effectRef": "editorial-rule"
+    }
+  ],
+  "safeAreas": { "margin": 120 },
+  "collisionGroups": [],
+  "compatibleVariants": []
+}

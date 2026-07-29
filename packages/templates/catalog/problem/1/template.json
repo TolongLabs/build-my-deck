@@ -1,0 +1,54 @@
+{
+  "id": "problem",
+  "version": "1",
+  "intents": ["problem", "pain-point", "motivation"],
+  "slots": {
+    "eyebrow": {
+      "accepts": ["text"],
+      "budget": { "maxChars": 20, "maxLines": 1 },
+      "optional": true,
+      "priority": 4,
+      "frame": { "x": 120, "y": 120, "w": 600, "h": 36, "rotation": 0 },
+      "style": { "typeRef": "eyebrow" }
+    },
+    "headline": {
+      "accepts": ["text"],
+      "budget": { "maxChars": 60, "maxLines": 2 },
+      "optional": false,
+      "priority": 1,
+      "frame": { "x": 120, "y": 170, "w": 1000, "h": 180, "rotation": 0 },
+      "style": { "typeRef": "headline" }
+    },
+    "body": {
+      "accepts": ["text"],
+      "budget": { "maxChars": 420, "maxLines": 10, "maxItems": 5 },
+      "optional": false,
+      "priority": 2,
+      "frame": { "x": 120, "y": 400, "w": 1000, "h": 460, "rotation": 0 },
+      "style": { "typeRef": "body" }
+    },
+    "visual": {
+      "accepts": ["image", "screenshot"],
+      "budget": {},
+      "optional": true,
+      "priority": 3,
+      "frame": { "x": 1240, "y": 170, "w": 560, "h": 690, "rotation": 0 },
+      "style": { "colorRef": "panel-border" }
+    }
+  },
+  "fixedElements": [
+    {
+      "id": "panel-bg-visual",
+      "kind": "shape",
+      "shape": "rectangle",
+      "frame": { "x": 1220, "y": 150, "w": 600, "h": 730, "rotation": 0 },
+      "style": { "colorRef": "panel-bg", "componentRef": "panel" },
+      "zOrder": "behind"
+    }
+  ],
+  "safeAreas": { "margin": 120 },
+  "collisionGroups": [
+    { "id": "visual-panel", "memberIds": ["panel-bg-visual", "visual"], "severity": "informational" }
+  ],
+  "compatibleVariants": ["problem-dense"]
+}

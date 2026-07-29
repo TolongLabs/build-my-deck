@@ -1,0 +1,30 @@
+{
+  "slots": {
+    "eyebrow": {
+      "kind": "text",
+      "paragraphs": [{ "runs": [{ "text": "YC S26 · Hackathon Demo Day", "marks": [] }] }]
+    },
+    "headline": {
+      "kind": "text",
+      "paragraphs": [{ "runs": [{ "text": "Ship A Judge-Ready Deck Before You Sleep", "marks": [] }] }]
+    },
+    "subtitle": {
+      "kind": "text",
+      "paragraphs": [
+        {
+          "runs": [
+            {
+              "text": "An LLM-generated pitch deck your whole team can still edit, element by element, before you walk on stage.",
+              "marks": []
+            }
+          ]
+        }
+      ]
+    },
+    "visual": {
+      "kind": "image",
+      "assetId": "asset-cover-hero",
+      "alt": "Screenshot of the live editor canvas mid-edit"
+    }
+  }
+}

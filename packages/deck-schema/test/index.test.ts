@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import * as schema from '../src/index'
 
 const validDeck = (): schema.Deck => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   documentId: 'deck-1',
   revision: 0,
   canvas: {
@@ -90,7 +90,7 @@ describe('deck schema', () => {
     const deck = schema.Deck.parse(validDeck())
     const physicalPointsPerDesignPixel = (deck.canvas.printWidthIn * 72) / deck.canvas.width
 
-    expect(deck).toMatchObject({ schemaVersion: 1 })
+    expect(deck).toMatchObject({ schemaVersion: 2 })
     expect(physicalPointsPerDesignPixel).toBeCloseTo(0.5, 3)
     const { schemaVersion: _schemaVersion, ...withoutVersion } = validDeck()
     expect(() => schema.Deck.parse(withoutVersion)).toThrow()
@@ -267,11 +267,105 @@ describe('deck schema', () => {
     const { schemaVersion: _schemaVersion, ...withoutVersion } = v0Deck
     const snapshot = structuredClone(withoutVersion)
 
-    expect(schema.migrate(withoutVersion)).toMatchObject({ schemaVersion: 1 })
+    expect(schema.migrate(withoutVersion)).toMatchObject({ schemaVersion: 2 })
     expect(withoutVersion).toEqual(snapshot)
 
     const result = schema.safeParseDeck({ ...validDeck(), slides: [{}] })
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.issues.some((issue) => issue.path[0] === 'slides')).toBe(true)
   })
+
+  test('migrates a real v1 fixture (no componentStyles/effects) to v2 with conservative theme defaults', () => {
+    const v1Deck = validDeck()
+    v1Deck.schemaVersion = 1 as never
+    v1Deck.theme.componentStyles = undefined
+    v1Deck.theme.effects = undefined
+
+    const migrated = schema.migrate(v1Deck)
+
+    expect(migrated.schemaVersion).toBe(2)
+    expect(migrated.theme.effects?.halftone).toEqual({ colorRef: 'ink', intensity: 0 })
+    expect(migrated.theme.effects?.['hard-shadow']).toEqual({ colorRef: 'ink', intensity: 0 })
+    expect(migrated.theme.effects?.['editorial-rule']).toEqual({ colorRef: 'ink', intensity: 0 })
+    expect(migrated.theme.componentStyles?.panel).toEqual({
+      backgroundRef: 'ink',
+      borderRef: 'ink',
+      textRef: 'headline'
+    })
+  })
+
+  test('a theme carrying all three effects and componentStyles round-trips through Deck.parse', () => {
+    const deck = validDeck()
+    deck.theme.componentStyles = {
+      panel: { backgroundRef: 'ink', borderRef: 'ink', textRef: 'headline' },
+      badge: { backgroundRef: 'ink', borderRef: 'ink', textRef: 'headline' },
+      stat: { backgroundRef: 'ink', borderRef: 'ink', textRef: 'headline' }
+    }
+    deck.theme.effects = {
+      halftone: { colorRef: 'ink', intensity: 0.9 },
+      'hard-shadow': { colorRef: 'ink', intensity: 0.85 },
+      'editorial-rule': { colorRef: 'ink', intensity: 0.2 }
+    }
+
+    const parsed = schema.Deck.parse(deck)
+    expect(parsed.theme.componentStyles).toEqual(deck.theme.componentStyles)
+    expect(parsed.theme.effects).toEqual(deck.theme.effects)
+  })
+
+  test('rejects an unknown effect name and an incomplete effect/componentStyle record', () => {
+    const deck = validDeck()
+
+    expect(() =>
+      schema.Deck.parse({
+        ...deck,
+        theme: { ...deck.theme, effects: { ...conservativeEffects(), glow: { colorRef: 'ink', intensity: 0.5 } } }
+      })
+    ).toThrow()
+
+    expect(() =>
+      schema.Deck.parse({
+        ...deck,
+        theme: { ...deck.theme, effects: { halftone: { colorRef: 'ink', intensity: 0.5 } } }
+      })
+    ).toThrow()
+
+    expect(() =>
+      schema.Deck.parse({
+        ...deck,
+        theme: {
+          ...deck.theme,
+          componentStyles: { panel: { backgroundRef: 'ink', borderRef: 'ink', textRef: 'headline' } }
+        }
+      })
+    ).toThrow()
+  })
+
+  test('cites effects and component styles by role — a bare effect value outside overrides is rejected', () => {
+    const element = validDeck().slides[0]?.elements['text-1']
+    if (!element) throw new Error('fixture element is required')
+
+    expect(schema.Element.parse({ ...element, effect: { effectRef: 'halftone' } }).kind).toBe('text')
+    expect(
+      schema.Element.parse({ ...element, effect: { effectRef: 'halftone', overrides: { intensity: 0.4 } } }).kind
+    ).toBe('text')
+    expect(schema.Element.parse({ ...element, component: { componentRef: 'panel' } }).kind).toBe('text')
+
+    expect(() => schema.Element.parse({ ...element, effect: { intensity: 0.4 } })).toThrow()
+    expect(() => schema.Element.parse({ ...element, effect: { effectRef: 'halftone', intensity: 0.4 } })).toThrow()
+    expect(() =>
+      schema.Element.parse({ ...element, effect: { effectRef: 'halftone', overrides: { colorRef: 'ink' } } })
+    ).toThrow()
+    expect(() => schema.Element.parse({ ...element, component: { componentRef: 'glow' } })).toThrow()
+    expect(() =>
+      schema.Element.parse({ ...element, component: { componentRef: 'panel', backgroundRef: 'ink' } })
+    ).toThrow()
+  })
 })
+
+function conservativeEffects() {
+  return {
+    halftone: { colorRef: 'ink', intensity: 0 },
+    'hard-shadow': { colorRef: 'ink', intensity: 0 },
+    'editorial-rule': { colorRef: 'ink', intensity: 0 }
+  }
+}

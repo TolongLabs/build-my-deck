@@ -1,0 +1,42 @@
+{
+  "slots": {
+    "eyebrow": {
+      "kind": "text",
+      "paragraphs": [{ "runs": [{ "text": "Traction Since The Beta", "marks": [] }] }]
+    },
+    "headline": {
+      "kind": "text",
+      "paragraphs": [{ "runs": [{ "text": "Every Number We Track Since Opening The Beta", "marks": [] }] }]
+    }
+  },
+  "repeaterItems": [
+    {
+      "value": { "kind": "text", "paragraphs": [{ "runs": [{ "text": "1,204hrs", "marks": [] }] }] },
+      "label": {
+        "kind": "text",
+        "paragraphs": [{ "runs": [{ "text": "Judge hours saved across pilot events", "marks": [] }] }]
+      }
+    },
+    {
+      "value": { "kind": "text", "paragraphs": [{ "runs": [{ "text": "4.8/5.0", "marks": [] }] }] },
+      "label": {
+        "kind": "text",
+        "paragraphs": [{ "runs": [{ "text": "Average judge-readiness score", "marks": [] }] }]
+      }
+    },
+    {
+      "value": { "kind": "text", "paragraphs": [{ "runs": [{ "text": "58 Teams", "marks": [] }] }] },
+      "label": {
+        "kind": "text",
+        "paragraphs": [{ "runs": [{ "text": "Teams who skipped Figma entirely", "marks": [] }] }]
+      }
+    },
+    {
+      "value": { "kind": "text", "paragraphs": [{ "runs": [{ "text": "$0 Spent", "marks": [] }] }] },
+      "label": {
+        "kind": "text",
+        "paragraphs": [{ "runs": [{ "text": "Average design-tool spend per team", "marks": [] }] }]
+      }
+    }
+  ]
+}
