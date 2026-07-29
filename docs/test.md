@@ -587,3 +587,519 @@ Also worth folding: the older *"Playwright Pages Need A Real Origin"* execution 
 **Design (impeccable detect):** `npx impeccable detect packages/render/src/deck-stage.ts packages/render/src/deck-stage.css.ts playwright.config.ts` (Node v24.14.0, relative forward-slash paths) → **exit 0, zero output, no findings.** This round changed no styling surface — `deck-stage.css.ts` is untouched since wave 2 and the only render edit is a promise in the readiness gate. **No unwaived design findings.**
 
 **Smoke test:** `bun test` ×4 → **87 pass / 2 skip / 0 fail**, identical every run (up from 80 — 5 new provider tests, 2 new schema tests); `unshare -rn bun test` (no network namespace) → identical, so the default run is still fully offline; live tests still skip with all three real credentials present and non-empty in the Bun runtime (`RUN_LIVE_PROVIDER_TESTS` unset) — **no provider quota spent by QA**; `tsc --noEmit -p tsconfig.base.json` → exit **0**; `biome check .` → **83 files, 0 findings**; `playwright test` ×7 → **4 passed** each, no leaked server; `--repeat-each=10 --workers=8` under full CPU saturation → 1 failure in 40, diagnosed as R-4. Teeth-checks: reverting B-1 → 3 fail; reverting B-2 → 2 time out; reverting B-3 → 1 fails; all restored and checksum-verified.
+
+---
+
+## [30/07/26] — Wave 3: Task 6B (OAuth/Sessions/Ownership/Admission) + Task 7 (Template Catalog + Design Systems) + Task 8 (`render(Deck)`) + Task 8B (`ThemeSpec` v2) + `toThemeSpec` follow-up
+
+**Verdict: Reject.** Five blocking findings. Three of them are the *same failure mode this project has now hit six times*: a green test whose assertion is correct but whose **entry point is a hand-built fixture the production path can never construct**. Task 8B's headline property — "the same `Deck` under `comic`, `editorial` and `brutalist` is visibly a different deck, not a recoloured one" — is **false on the production path**, and its Playwright proof test still passes when I re-break `toThemeSpec`. Separately, the renderer silently drops every decorative element in 8 of the 10 catalog templates.
+
+Task 6B is the strongest work in the wave — the session/ownership/deletion core is genuinely well built and I verified hard deletion in a real running container — but it ships a **working open redirect**, a **CSRF guard that never executes**, and a **CSRF check that 403s every legitimate browser in the intended deployment while passing every request with no `Origin` header**.
+
+### Verification Re-Run Independently
+
+Every gate re-run from scratch; nothing taken on report.
+
+| Check | Result |
+| - | - |
+| `bunx tsc --noEmit -p tsconfig.base.json` | exit **0** |
+| `bunx biome check .` | **148 files, 0 findings** |
+| `bun test` | **202 pass / 2 skip / 0 fail**, 1117 assertions, 27 files |
+| `unshare -rn bun test` (no network namespace) | **identical — 202 pass.** The suite is genuinely offline; no live provider or GitHub call |
+| `bunx playwright test` | **8 passed** (deck-stage ×4, render ×3, design-systems ×1) — all three reported-"blocked" wave-2 tests now genuinely run |
+| Docker | `docker build` → exit 0; container started with a real `/data` volume; `/api/health` → `{"status":"ok"}` |
+| Git state | HEAD still **`74da19e`**, branch `main`, **no commits / branches / stashes / pushes** |
+| Working tree after QA | **Byte-identical** to how I found it. Every teeth-check revert restored and re-verified (the catalog sha256 tripwire re-passes, proving `template.json` is byte-identical); probe scripts live in the scratchpad, never the repo |
+
+---
+
+### Blocking Findings
+
+#### B-1 — `apps/api/src/auth/return-to.ts:6-11` — **Critical** — the open-redirect allowlist is bypassable with a backslash; the OAuth flow has a working open redirect
+
+`sanitizeReturnTo` rejects `//host` and anything containing `://`, but **not** `/\host`. Browsers apply the WHATWG URL parser to a `Location` header, where `\` is equivalent to `/` in a special scheme — so `/\evil.example/phish` is parsed as a protocol-relative URL and lands on the attacker's origin.
+
+Proven end to end in real Chromium against the real function (not a re-implementation):
+
+```
+attacker return_to : "/\\127.0.0.1:4401/phish"
+after sanitizeReturnTo: "/\\127.0.0.1:4401/phish"     <-- allowed unchanged
+landed on   : http://127.0.0.1:4401/phish
+page content: ATTACKER SITE
+```
+
+The chain is credible: a victim clicks `/api/auth/github?return_to=/\evil.example`, completes a **real** GitHub sign-in, and the trusted app origin redirects them to the attacker — the highest-value moment for a phish. Task 6B's first checkbox says "verify: forged/replayed state and **open redirects fail**"; it is ticked and it does not hold. `auth.test.ts:49-51` tests exactly the `//` case and stops there.
+
+**Fix:** stop pattern-matching and resolve. `const u = new URL(candidate, 'https://placeholder.invalid'); return u.origin === 'https://placeholder.invalid' ? u.pathname + u.search + u.hash : '/'`. Add `/\evil.example`, `/\\evil.example`, `/%09/evil.example` and a tab/newline variant to `auth.test.ts`.
+
+#### B-2 — `apps/api/src/server.ts:38-39` — **High** — the CSRF guard on `POST /api/auth/signout` never executes
+
+```ts
+app.route('/api/auth', createAuthRoutes({ db, env, sessionTtl: DEFAULT_SESSION_TTL }))
+app.use('/api/auth/signout', requireSameOrigin())   // registered AFTER the route it guards
+```
+
+Hono composes matched handlers in **registration order**. `/signout` is a terminal handler (it never calls `next()`), so a middleware registered after `app.route()` is never reached. Isolated and confirmed both ways:
+
+```
+mount THEN use (as in server.ts):  status 200   (middleware never logged)
+use THEN mount:                    MW RAN: before-route   status 200
+```
+
+Reproduced against the **running container**: `POST /api/auth/signout` with `Origin: https://evil.example` → **HTTP 200**. Contrast `/api/account/*`, where the same middleware *is* registered before `mountApiRoutes` and correctly returns 403.
+
+Impact is limited (forced sign-out is a nuisance, not data loss) but the severity is that it is **dead code that reads as live** — and no `createApp`-level test covers it, so nothing would ever notice.
+
+**Fix:** move line 39 above line 38. Add a `createApp` test asserting cross-origin `POST /api/auth/signout` → 403.
+
+#### B-3 — `apps/api/src/admission/csrf.ts:15` — **High** — the CSRF check 403s every real browser in the intended deployment, and fails **open** when `Origin` is absent
+
+```ts
+if (origin && origin !== expected) { ...403 }
+```
+
+Two defects in one line.
+
+*Fails open.* A missing `Origin` header passes. Verified against the running container: `DELETE /api/account` with a valid session cookie and **no `Origin` header** → **HTTP 200, user physically deleted**. Only `SameSite=Lax` stands between that and a browser-driven attack.
+
+*Fails closed for legitimate users.* `expected` is `new URL(c.req.url).origin`. The container serves plain HTTP (`Dockerfile:36 EXPOSE 3000`, no TLS anywhere), while `sessions/cookies.ts:14` sets `secure: true` — which **requires** HTTPS, i.e. a TLS terminator in front. So a real browser sends `Origin: https://app.tolonglabs.com` while `c.req.url` is `http://app.tolonglabs.com/...`. Verified against the running container:
+
+```
+Origin https (real browser behind TLS proxy) : HTTP 403
+No Origin at all (non-browser client)        : HTTP 401  (CSRF check passed)
+```
+
+That is exactly inverted. As deployed, **authenticated account deletion — a stated acceptance criterion and the project's privacy commitment — is unreachable for every legitimate user**, while it is reachable by any client that simply omits a header.
+
+**Fix:** require the header on state-changing methods (`if (!origin) → 403`), and derive `expected` from a configured public origin (a new `PUBLIC_ORIGIN` env var, or a trusted `X-Forwarded-Proto`/`Host` pair) rather than from `c.req.url`. `docs/trd.md` currently says nothing about TLS termination — this needs recording either way.
+
+#### B-4 — `packages/render/src/render.tsx:43` — **Critical** — `SlideView` iterates `readingOrder` as the element *set*, so every decorative element is silently dropped from the render
+
+```ts
+{slide.readingOrder.map((elementId) => { ... })}
+```
+
+Task 7 correctly excludes purely decorative elements from `readingOrder` (`instantiate.test.ts:88` asserts it). Task 8 correctly emits DOM in `readingOrder`. Composed, **decoration never renders at all**. Measured across the real catalog through the production path:
+
+```
+cover               elements= 5  rootOrder= 5  readingOrder= 4  renderedNodes= 4  DROPPED=rule-baseline
+agenda              elements= 9  rootOrder= 9  readingOrder= 8  renderedNodes= 8  DROPPED=rule-under-headline
+problem             elements= 5  rootOrder= 5  readingOrder= 4  renderedNodes= 4  DROPPED=panel-bg-visual
+one-big-claim       elements= 4  rootOrder= 4  readingOrder= 3  renderedNodes= 3  DROPPED=claim-decor
+two-column          elements= 5  rootOrder= 5  readingOrder= 4  renderedNodes= 4  DROPPED=panel-bg-visual
+two-column-dense    elements= 5  rootOrder= 5  readingOrder= 4  renderedNodes= 4  DROPPED=panel-bg-visual
+stat-row            elements=11  rootOrder=11  readingOrder=10  renderedNodes=10  DROPPED=rule-top
+closing             elements= 6  rootOrder= 6  readingOrder= 5  renderedNodes= 5  DROPPED=rule-baseline
+
+TOTAL elements silently dropped: 8 across 8 of 10 templates
+```
+
+This falsifies a ticked checkbox verbatim: *"Stamp `data-element-id` on every rendered node → verify: **every element in the document has exactly one matching node**."* Downstream, task 12 measures through `data-element-id` and the task-15 editor selects through it — a dropped element is unmeasurable and unselectable.
+
+Why the test missed it: `render.test.tsx:131-132` sets `rootOrder: ['background','headline','image','icon','svg','group']` and `readingOrder: ['headline','image','icon','svg','group','background']` — a **permutation of the full set**, which production never produces. `render.pw.ts:78-79` and `:158-159` do the same. The assertion at `render.test.tsx:146` is correct; the fixture is not.
+
+**Fix:** render the union — iterate `readingOrder`, then append any `rootOrder` id not already emitted (`aria-hidden`, `tabIndex={-1}`). Then re-point the completeness assertion at a slide built by `instantiate()` rather than by hand.
+
+#### B-5 — `packages/templates/src/instantiate.ts` — **Critical** — no element the production path constructs ever carries `effect` or `component`, so 8B's central claim is false end to end
+
+`render.tsx:31` applies effects only when `element.effect` is set. `instantiate()` — the only element constructor in the repo — never sets `effect` or `component`. Five `template.json` files **do** declare the authoring intent (`cover`, `agenda`, `one-big-claim`, `stat-row`, `closing` all carry `effectRef`), and `instantiate()` drops the field on the floor. `packages/templates/src/schema.ts:52` still calls `effectRef` *"Reserved for future render-side effect treatments; not schema-embedded"* — a comment 8B invalidated and nobody revisited.
+
+Driving `DESIGN_SYSTEMS → toThemeSpec → instantiate → Deck.parse → renderDeckToHtml`:
+
+```
+[editorial]  box-shadow: (none)   background-image: (none)   border-bottom: (none)
+[comic]      box-shadow: (none)   background-image: (none)   border-bottom: (none)
+[brutalist]  box-shadow: (none)   background-image: (none)   border-bottom: (none)
+```
+
+**Zero effect declarations reach pixels for any system.** On the real path the three design systems still differ by typography and palette alone — precisely the "half-tested anti-lanslop bet" task 8B was created to close. The gap moved one layer downstream; it did not close. (B-4 compounds it: the elements that would carry the effects are the decorative ones that never render.)
+
+**Fix:** map `fixedElement.effectRef → element.effect = { effectRef }` in `instantiate()`; decide whether slots/repeater cells should cite `component` (`panel`/`badge`/`stat` currently reach nothing). Then add a test that renders a **real catalog template** under all three systems and asserts effect CSS is present — B-6 explains why the existing one cannot.
+
+---
+
+### The Cross-Cutting Sweep — Tests That Enter Downstream Of A Broken Step
+
+This is the fifth-shape sweep the PM asked for. **Four instances found, all in this wave.** Named, with the specific construction step each one skips:
+
+#### B-6 — `packages/render/test/design-systems.pw.ts:26-28` — **High** — 8B's own proof test still validates a workaround, and passes against a re-broken `toThemeSpec`
+
+```ts
+function themeSpecFor(system: DesignSystem): ThemeSpec {
+  return { ...toThemeSpec(system), componentStyles: system.componentStyles, effects: system.effects }
+}
+```
+
+The comment above it — *"`toThemeSpec` … predates `ThemeSpec` v2 and projects only `typeStyles`/`colorRoles`"* — is **stale**: the follow-up fixed exactly that. The override is now redundant, and it is what removes the test's teeth. Demonstrated by re-injecting the original regression (stripping `componentStyles`/`effects` from `toThemeSpec`):
+
+```
+8B's Playwright proof test  →  1 passed          <-- did not notice
+bun test                    →  1 fail  (packages/templates/test/design-systems.test.ts:78)
+```
+
+Only the follow-up's own unit guard catches it. The Playwright test proves the *renderer* resolves effects; it proves nothing about the *system*. Compounding it, `deckFor()` at `:30-92` hand-builds three `shape` elements that each explicitly carry `effect:` and `component:` — objects **B-5 proves nothing in the system can produce**.
+
+**Fix:** delete `themeSpecFor` and call `toThemeSpec(system)` directly; replace `deckFor()`'s synthetic elements with `instantiate()` output from a real catalog template.
+
+#### B-7 — `packages/render/test/render.pw.ts:135-170` — **Medium** — the axe pass never sees a shipped design system
+
+The a11y fixture uses a synthetic theme (`id: 'fixture'`, `colorRoles: { paper: '#FFFFFF' }`, `color: '#111111'`) — not `editorial`, `comic` or `brutalist`. So axe evaluates a palette that ships nowhere, which is why it never sees the contrast failures in A-1. (Wave 2 already fixed this test once, for the missing-image vacuity; the *theme* entry point was left synthetic.)
+
+**Fix:** run the axe pass over `toThemeSpec(comic)` / `editorial` / `brutalist`, not a fixture theme.
+
+Also in this shape, already covered above: **B-4** (`render.test.tsx:131`, `render.pw.ts:78`) and **B-5/B-6** (`design-systems.pw.ts:30`).
+
+#### B-8 — `apps/api/src/control-ledger/db.ts:20` — **Medium** — deleting `PRAGMA foreign_keys = ON` breaks nothing in the suite
+
+Teeth-check: removing that exact line → **101/101 apps/api tests still pass**. Every test builds its database with `new Database(':memory:')` plus a manual `db.exec('PRAGMA foreign_keys = ON')`, so **`openControlLedger` is never exercised by any test** — the production DB-open path, and the one line `docs/progress.md` singles out as load-bearing ("SQLite does not persist it in the file"), is uncovered. The claimed teeth-check runs foreign keys off on a *test-owned* connection, not through this function.
+
+I did confirm the pragma is genuinely per-connection, using a fresh read-only connection to the container's persisted file: `PRAGMA foreign_keys → 0`. So the concern is real, not theoretical. `deleteUserCascade`'s zero-count assertion is a genuine safety net (it would throw rather than orphan), which is why this is Medium and not Critical.
+
+**Fix:** have at least one test open its DB through `openControlLedger(':memory:')` and assert `PRAGMA foreign_keys` is 1.
+
+Contrast with the checks that **do** have teeth, verified by reverting each: `hashToken` → return the raw token = **2 fail**; `sanitizeReturnTo` → identity function = **5 fail**; catalog `manifest.lock.json` tripwire, tested by editing `cover/1/template.json` in place (raised one budget 20%) = **fails with the exact hash mismatch**, and passes again on byte-identical restore.
+
+---
+
+### Advisory Findings (Do Not Block Gate 2)
+
+- **A-1 — the shipped design systems have real contrast failures.** This product's *output* is design, so these are slide-quality defects, not repo-chrome ones. WCAG AA, computed against each system's own `paper`:
+  - `comic.stat-value` `#2FA8A0` → **2.70:1** at 110px — fails the 3:1 large-text floor, on the single most-read element of the `stat-row` template.
+  - `brutalist.eyebrow` and `brutalist.agenda-number` `#FF5A1F` → **2.83:1** — fail 3:1.
+  - `comic.eyebrow` / `headline-lg` / `agenda-number` sit at **3.01:1** — passing by 0.01.
+  - `badge-label` in `editorial` and `comic` is set to the *paper* colour (**1.00:1** on paper; 4.81:1 / 3.01:1 on `badge-bg`). Correct **only** inside a badge — and nothing in the schema, `resolveTypeStyle` or the templates constrains where a type role may be cited. A model binding `badge-label` outside a badge renders invisible text. This belongs in the generator's validation layer (`AGENTS.md`'s "double meaning" note).
+- **A-2 — `renderDeckToHtml` embeds no fonts at all** (`render.tsx:80`). Output contains no `@font-face`, no `.woff2`, no `data:font`; opened from `file://` it renders in a system fallback. Task 8's checkbox says "inlined CSS, **inlined fonts**"; task 7's says "rendering with the network blocked produces **identical measurements**" — neither holds through the production render path. Root cause: `ThemeSpec` carries no font assets (task 7's ticked checkbox says *"Define `ThemeSpec` — **content-addressed font assets**, …"*), and `packages/render` cannot reach `templates`' `FONT_ASSETS` without a dependency edge. **This is the same architectural gap 8B fixed for effects, one field over** — and the same argument applies (a deck must be renderable without the catalog). Worth deciding before task 11 and task 12 build on it.
+- **A-3 — `renderDeckToHtml` emits a synthetic `deck-stage:ready`** (`render.tsx:80`): an inline `<script>` that dispatches the event immediately, with no `deck-stage` runtime present and no font/image gating. This is the *exact* antipattern wave 2 fixed in `deck-stage.pw.ts`. Task 11's PDF export waiting on this event would capture before fonts and images settle.
+- **A-4 — authored image `alt` text is silently discarded.** `packages/templates/src/schema.ts:189` requires `alt` on `ImageBinding`, and the fixtures author real text (`"Screenshot of the live editor canvas mid-edit"`), but `instantiate()` produces an `ImageElement` with no alt, because `deck-schema`'s `ImageElement` (`index.ts:219-224`) has no `alt` field. `elements/index.tsx:126` then falls back to `alt={element.semanticRole}` → `alt="visual"`. Task 8's a11y checkbox says "image `alt`". Also: `<img>` is emitted with **no `src`**, and `crop`/`fit` are hardcoded — task 10's golden fixture needs images.
+- **A-5 — physical deletion leaves the user id in the WAL.** After a verified-clean cascade delete in the container, the deleted user id still appeared **10 times** in `/data/control.sqlite-wal`. `PRAGMA secure_delete` is **0**, so freed main-DB pages retain bytes too. Row counts being zero is not the same as the data being gone, and `docs/prd.md`'s posture is physical deletion with no tombstone. I confirmed the fix works: `PRAGMA wal_checkpoint(TRUNCATE)` after the delete transaction dropped residue to **0**. Consider `secure_delete = ON` at open.
+- **A-6 — `OAuthStateStore` (`auth/state.ts:17`) grows without bound.** Entries are only removed by `consume()`; unconsumed states live forever despite the 10-minute TTL. Unauthenticated `GET /api/auth/github` is enough to grow the map. Add a sweep on `issue()` or a size cap.
+- **A-7 — no test actually exercises concurrency.** `reserveAllowance` is atomic by construction (synchronous `db.transaction`, single-threaded), and I agree the property holds — but "parallel requests cannot double-spend" is asserted nowhere. The restart-survival test (`admission.test.ts:166`) correctly uses a real on-disk DB, which is the harder half.
+- **A-8 — `catalog.test.ts:55-60`** claims "every entry ships a **schema-valid** max-capacity fixture" but only asserts `JSON.parse` does not throw. The real property *is* proven, at `instantiate.test.ts:34` via `Slide.safeParse` across 10 templates × 3 systems — so this is wording, not a hole.
+- **A-9 — stale comment / dangling reference.** `packages/templates/src/schema.ts:141-145` says effects are *"not schema-embedded"* and points at *"this package's README note under 'Known Gap'"*. 8B embedded them, and `packages/templates/README.md` does not exist.
+- **A-10 — duplicate React keys.** `elements/index.tsx:34` keys runs on `${run.text}:${run.marks}` and `:59` keys paragraphs on their content. Two identical runs in one paragraph collide. Harmless for `renderToStaticMarkup`; a reconciliation hazard for task 15's live editor.
+- **A-11 — every non-decorative element gets `role="group"` and `tabIndex={0}`** (`render.tsx:55-56`). A dense slide becomes 10+ tab stops of unlabelled groups. axe does not flag it; a screen-reader user would feel it.
+- **A-12 — OFL 1.1 asks that the licence text accompany the fonts.** `fonts/LICENSES.md` links to it rather than reproducing it. One paste closes it.
+
+---
+
+### Verified Clean — Task 6B
+
+- **Sessions.** 32 random bytes; stored only as HMAC-SHA256 keyed by `SESSION_SECRET` (`tokens.ts:15`); idle **and** absolute expiry both enforced and both GC'd on miss (`store.ts:68-71`); idle window capped at absolute on refresh; `HttpOnly; Secure; SameSite=Lax; Path=/`; cleared on sign-out. I dumped the `sessions` table and grepped the container's on-disk file: **the raw token appears nowhere, and neither does the session secret.** Fixation-proof by construction — there is no pre-auth session to upgrade.
+- **OAuth.** State is 32 random bytes, consumed unconditionally on first sight (`state.ts:27-28`) — forging and replaying both fail, tested. **No `scope`** and **no `redirect_uri`** are sent (`github.ts:22-27`), verified by parsing the authorize URL. The access token lives in one local variable across two calls and is never returned, stored or logged; asserted by sentinel scan.
+- **Hard deletion — verified in a real running container against the persisted SQLite file**, not a unit test. Seeded a user + session + allowance row through the container's own code, then `DELETE /api/account` over real HTTP:
+  ```
+  before: users 1, sessions 1, user_allowance 1
+  response: {"deleted":true,"sessionsDeleted":1,"allowanceRowsDeleted":1}
+  after:  users 0, sessions 0, user_allowance 0
+  tables: users,sessions,user_allowance      deleted_at columns: 0
+  old cookie replay → {"authenticated":false}
+  second delete → HTTP 401 (idempotent absence, not a crash)
+  ```
+  `deleteUserCascade` asserts post-delete counts are zero inside the transaction rather than trusting the cascade (`users.ts:68-70`) — correct, and the reason B-8 is only Medium.
+- **Admission order** (`compose.ts`) is exactly as mandated: auth → IP backstop → atomic allowance → semaphore. Denial at each layer releases what *that attempt* reserved — including the subtle case where the semaphore denies after the allowance succeeded (`:70`), covered by a test that checks the surviving `runs_reserved` is the *first* attempt's. A client cannot raise a server limit: `resolveRunLimits` clamps with `Math.min` and a request for 999,999 tokens against a 5,000 ceiling resolves to 5,000.
+- **Allowance atomicity and restart survival.** Synchronous `db.transaction` read-check-write; `reconcile`/`release` idempotent via a `settled` latch; counters verified to survive a real close/reopen against an **on-disk** file.
+- **Ledger minimality.** Three tables, no `deleted_at`, no prompt/deck/asset/provider/OAuth/raw-IP column. IPs are coarsened to /24 or /48 **before** hashing. Container logs after login, denial, logout and deletion: **zero sentinel hits**.
+
+### Verified Clean — Task 7
+
+- **Immutability tripwire has teeth** (see above). 10 entries, unique ids, all slot frames inside 1920×1080, text slots inside the safe margin, image slots allowed to bleed.
+- **Max-capacity fixtures genuinely saturate.** Measured every budgeted slot: **43 slots, min 73%, max 100%, mean 88%, 0 over budget, 0 under 70%.** The reported 73–100% is accurate — task 10's W-1 assertion has real fixtures to bite on.
+- **`instantiate()` is correct where it is wired.** Detached elements (deep-freeze test passes), `origin.templateSlot` provenance, `readingOrder` from slot priority with decoration excluded, deterministic, optional slots absent, unaccepted binding kinds and repeater min/max rejected.
+- **Fonts.** 12 files; **every content hash recomputed and matched**; all real `wOF2`; all OFL 1.1 families; **no CDN URL anywhere** in `packages/` outside `providers`' own base URL and the LICENSES prose.
+- **Manifest: 1,956 bytes** (under 2,048), dense variants excluded, and I confirmed no coordinate, frame or style ref leaks into it.
+- **The three systems are genuinely different art directions — my judgement, not just the numbers.** They differ by *typeface shape language*, which is the strongest available lever: humanist serif + geometric mono (`editorial`), display cartoon + heavy grotesque (`comic`), condensed industrial + terminal mono (`brutalist`). **Zero shared hex across all three pairs.** Type scales differ (headline/body 2.57 / 3.20 / 3.14). This is not a recolour. Two honest limits worth carrying to iteration 2's remaining systems: all three are light warm-paper systems (none dark-first), and because templates are art-direction-neutral by design, the *composition* is identical across systems — the reskin changes surface, not rhythm. That is a locked Gate-1 property, not a defect.
+
+### Verified Clean — Tasks 8 / 8B
+
+- **One renderer, no second path.** Only `render.tsx` produces slide markup; `renderToStaticMarkup` over the same components serves both consumers. **Rendering needs no catalog lookup** — I built a `Deck` and rendered it with `packages/templates` never imported.
+- **Purity.** Two renders of the same deck are **byte-identical**. No `Date.now()`, no randomness, no `fetch`.
+- **Security holds.** No `fetch`, `innerHTML` or `dangerouslySetInnerHTML` in `packages/render/src` (the one `innerHTML` is `deck-stage.ts:188`, wave-2 code, fed only static chrome). I tried to smuggle nine payloads end to end: markup, path traversal, external URL and a `data:` URI through `catalogRef`/`assetId` were **all rejected at the schema boundary**; the three that parse (`semanticRole`, text runs, page title) render **fully escaped** — `alt="&lt;img src=x onerror=alert(1)&gt;"`, `<p>&lt;script&gt;…</p>`, `<title>&lt;/title&gt;…`. D4's structural refusal holds.
+- **`rootOrder` drives paint, `readingOrder` drives DOM, and they legally differ** — asserted in a real browser (`render.pw.ts`), z-index and focus order both correct.
+- **Migration chain intact.** A v0 fixture migrates through the **full** chain to v2 and passes `Deck.parse`; the v1→v2 defaults are genuinely conservative — every effect intensity **0**, every ref pointed at a role the theme already declares, so a migrated deck renders unchanged.
+- **Style-by-reference survives.** `EffectStyle` admits only `overrides.intensity`; `ComponentStyleRef` admits nothing but a role name; an unknown effect name is rejected. No bare effect or component value is legal outside `overrides`.
+- **`toThemeSpec` now carries the effects, with correct defensive copying.** Verified on the real projection: comic 0.9 / 0.85, editorial 0.08 / 0.15, brutalist 0.15 / 0.4, no aliasing — mutating the projection's effects, type styles and component styles left `DESIGN_SYSTEMS` untouched. **The PM's report is accurate.** The problem is one layer further down (B-5): nothing cites those effects.
+
+### Scope And Git Discipline — Clean
+
+| Check | Result |
+| - | - |
+| Root files | `bun.lock`, `package.json`, `tsconfig.base.json`, `biome.json`, `playwright.config.ts`, every workspace manifest — **all untouched** |
+| `docs/` authorship | Only `plan.md` (checkbox ticks) and `progress.md` (one entry) changed; **no source file writes to `docs/`**. Consistent with PM authorship throughout |
+| File scopes | Every changed path maps to a declared `Files:` scope — 6B stayed inside `apps/api/src/{auth,identity,sessions,admission,control-ledger}` + the two routes + `server.ts`; 7 inside `packages/templates/**`; 8/8B inside `packages/render/**` + `packages/deck-schema/**`. **No overlap between the five agents** |
+| `.gitignore` | The PM's `data/` + `*.sqlite*` fix. **Verified by `git check-ignore`**: `data/`, `data/control.sqlite`, `foo.sqlite` and `.env` all genuinely ignored — the user-database exposure gap is closed |
+| Secret sweep | Every non-trivial value in the real `.env` matched against the whole tree (excluding `.env` itself) → **0 leaks**. No `sk-`/`ghp_`/`AIza`/private-key literals. `.env.example` is names-only. **No LLM-vendor name outside `packages/providers`** |
+| Git state | HEAD **`74da19e`**, `main`, no commits, branches, stashes or pushes |
+
+**Design (impeccable detect):** Impeccable is installed at `.claude/skills/impeccable/`. Ran `npx impeccable detect` (Node v24.14.0, relative forward-slash paths) on `packages/render/src/render.tsx`, `packages/render/src/elements/index.tsx`, `packages/render/src/theme-to-css.ts`, the three `packages/templates/src/design-systems/*.ts`, and both directories → **exit 0, zero output, no findings. No unwaived design findings.** Note `docs/DESIGN.md` governs the **editor chrome** (`apps/web`), which this wave did not touch — so I additionally computed WCAG contrast across all three shipped design systems by hand, because this product's *output* is design and the detector does not reach it. Those results are **A-1**, and I am not waiving them.
+
+### Wave 4 Readiness (9, 10, 12 dispatching concurrently)
+
+Stated plainly:
+
+- **Task 9** (`packages/editor/src/store/**`, `Depends on: 4`) — **unblocked and unaffected by every finding above.** Its scope is disjoint from 10 and 12.
+- **Task 10** (`fixtures/**`, `packages/render/test/{golden.test.ts,golden.pw.ts,template-capacity.pw.ts}`) — **blocked in substance by B-4 and B-5.** Its core checkbox is *"Render the same three slides in all three design systems"* as the acceptance evidence for the reskin affordance. Today that evidence would show three decks missing every decorative element and identical but for type and colour. Authoring it before B-4/B-5 land means authoring against a renderer that is about to change. The **W-1 max-capacity assertion (`template-capacity.pw.ts`) can proceed now** — I verified the fixtures genuinely saturate (73–100%), and B-4 does not affect text-slot overflow. My recommendation: fix B-4 and B-5 first, then dispatch 10 whole.
+- **Task 12** (measurement / auto-fit) — **blocked by B-4.** It addresses elements through `data-element-id`, and 8 of 10 templates currently emit no node for their decorative element, so collision/overlap measurement would be measuring an incomplete DOM. A-2 compounds it: with no `@font-face`, measurement runs against a fallback font, which is exactly the failure mode Finding 2 exists to prevent.
+- **Nothing forces an agent outside its `Files:` scope, and nothing forces a write to `bun.lock` or a root config.** One caveat: the natural fix for B-5 is in `packages/templates/src/instantiate.ts` and the fix for B-4 in `packages/render/src/render.tsx` — **two different packages**, so route them as two scoped fixes, not one.
+- Confirmed: task 10 owns `template-capacity.pw.ts` (W-1), and **tasks 10 and 12 route to the Claude programmer** under the Playwright rule — I re-confirmed the rule's basis, since all three of task 8's `*.pw.ts` tests failed the moment they were actually run.
+
+**Smoke test:** `tsc --noEmit` → **0**; `biome check .` → **148 files, 0 findings**; `bun test` ×3 → **202 pass / 2 skip / 0 fail** identical every run; `unshare -rn bun test` → **identical**, so the suite is genuinely offline and no provider quota was spent; `playwright test` ×2 → **8 passed**; `docker build` → exit 0 and a live container serving `/api/health`. Teeth-checks performed and every one restored byte-identical (re-verified by the catalog sha256 tripwire and the full suite returning to 202/0): `hashToken` → 2 fail; `sanitizeReturnTo` → 5 fail; `manifest.lock` → 1 fail; `PRAGMA foreign_keys` → **0 fail (B-8)**; `toThemeSpec` regression → Playwright **passed (B-6)**, 1 unit fail.
+
+### Re-Review — Wave 3 Fix Round (30/07/26)
+
+**Verdict: Reject.** Scoped to the delta. **Seven of the eight blocking findings are genuinely fixed**, each verified by reverting the production change and watching the right test fail, then restoring byte-identically. **B-1 is Not Fixed** — the resolve-based rewrite closed the backslash bypass and opened a new one. `sanitizeReturnTo('/..//evil.example')` returns `'//evil.example'`, which `routes.ts:75` puts straight into a `Location` header, and real Chromium follows it to the attacker origin. Same criticality, same ticked checkbox, new payload family. Two new findings come with the B-3 fix: the trust boundary it introduces is undocumented and its development default 403s every realistic browser.
+
+Scope of this pass: files with an mtime after my prior verdict (fix window **03:45–03:53**; `apps/api/{src,test}`, `packages/render/{src,test}`, `packages/templates/{src,test,catalog,fonts}`). `packages/deck-schema/src/index.ts` and `packages/templates/src/theme.ts` were **not** touched in the fix window — I re-verified their wave-2 guarantees as regression checks instead. Working tree restored **byte-identical**: `git status --short` returns the same 40 entries it did before I started; every mutated file `diff`-clean against its pre-review copy; the catalog sha256 tripwire re-passes; probe scripts live in the scratchpad, never the repo.
+
+#### Gates — Re-Run Independently
+
+| Check | Result |
+| - | - |
+| `bunx tsc --noEmit -p tsconfig.base.json` | exit **0** |
+| `bunx biome check .` | **149 files, 0 findings**, exit 0 |
+| `bun test` ×4 (incl. one after every teeth-check restore) | **212 pass / 2 skip / 0 fail**, 1171 assertions, 28 files — **identical every run** |
+| Skip determinism | The 2 skips are the live-provider tests. Both now gate on `process.env.RUN_LIVE_PROVIDER_TESTS === '1'` **and** credential presence (`live-qwen.test.ts:17,21`, `live-gemini.test.ts:17,21`), so the count cannot drift with a developer's `.env`. Requirement met |
+| `unshare -rn bun test` | **identical — 212 pass.** Suite is genuinely offline; no provider quota spent |
+| `bunx playwright test` ×2 | **8 passed** |
+| `docker build .` | exit **0**; container booted with a real `/data` volume, `/api/health` → `{"status":"ok"}` |
+| Git state | HEAD **`74da19e`**, `main`, no commits / branches / stashes / pushes. `bun.lock`, `package.json`, `tsconfig.base.json`, `biome.json`, `playwright.config.ts` and every workspace manifest **untouched** (`git diff --stat` empty for all of them) |
+| Secret sweep | 190 tracked+untracked files (vendored trees and `.env` excluded) swept for `sk-`/`AIza`/`gh[pousr]_`/`xox[baprs]-`/`AKIA`/PEM headers → **0 hits**. Every non-trivial value in the real `.env` byte-matched against all 190 files → **0 occurrences**. Container logs after boot: no key material. All `*_SECRET`/`*_TOKEN` literals in the tree are synthetic `sentinel-*`/`test-*` fixtures. No LLM-vendor name outside `packages/providers` (the two hits in `apps/api/src/secrets.ts:6,9` are prose in a doc comment explaining the boundary) |
+| `deleted_at` | Appears once, in `control-ledger/schema.ts:5`, as the prose prohibition. No column, no flag |
+
+#### Prior Findings — Verification
+
+| # | Prior finding | Result | Evidence + teeth-check |
+| - | ------------- | ------ | ---------------------- |
+| **B-1** | Open redirect via `/\host` | **NOT FIXED** | See N-1. The `/\\` guard and the resolve step both landed (`return-to.ts:15,23,28`) and the backslash family is dead — but path normalization introduced `/..//host`. Teeth on what *is* covered: reverting to the pre-fix pattern-only body makes `auth.test.ts:53` fail with `Received: "/\evil.example/phish"`, i.e. for the right reason. The suite has no case for the new family |
+| **B-2** | CSRF guard on `POST /api/auth/signout` never executes | **FIXED** | `server.ts:38` now registers `requireSameOrigin` **before** `app.route` at `:39`. Teeth-check: swapping the two lines back makes `server.test.ts:100` fail `Expected 403, Received 200` — the exact symptom. Confirmed against the **running container**: cross-origin `POST /api/auth/signout` → **403** (was 200) |
+| **B-3** | CSRF fails open on missing `Origin`, fails closed for real browsers | **FIXED — both halves** | `csrf.ts:13` is now `if (origin !== expectedOrigin)`, and `expectedOrigin` is `config.publicOrigin` (`server.ts:38,44`), not `new URL(c.req.url).origin`. Two independent teeth-checks: reintroducing `origin &&` fails `account.test.ts:158` (missing Origin → 200 instead of 403); re-deriving from `c.req.url` fails `account.test.ts:174` (a legitimate `https://app.example` browser behind a TLS proxy → 403 instead of 200). Both re-verified against the container: no-`Origin` DELETE → **403** (was 200 + user deleted); configured-origin DELETE → passes CSRF and reaches **401** auth. See **N-2**/**N-3** for what the fix left undocumented |
+| **B-4** | Renderer drops every decorative element | **FIXED** | `render.tsx:39-42` renders `readingOrder` then the `rootOrder` remainder; z-index still comes from `rootOrder` (`:37,45`). Measured through the **real construction path** (`DESIGN_SYSTEMS → toThemeSpec → instantiate → Deck.parse → renderDeckToHtml`) across all 10 catalog templates × 3 systems: **55 elements, 0 dropped** in every system (was 8 dropped across 8 of 10 templates). Teeth-check: reverting `domOrder` to `[...slide.readingOrder]` produces **3 unit fails** (`render.test.tsx:146,148` and two downstream) **and 2 Playwright fails**, one of which is `design-systems.pw.ts` — which enters through `instantiate()`, so the completeness property is now defended from the production path, not only from a fixture. `render.test.tsx:131-132` is also no longer a permutation (`readingOrder` is a strict subset), and `:148` asserts the exact DOM sequence including the appended decoration |
+| **B-5** | Nothing the production path constructs carries `effect`/`component` | **FIXED (core); one residual, see A-13** | `instantiate.ts:124` maps `fixed.effectRef → effect: { effectRef }`, `:125` maps `fixed.style.componentRef → component`, and `elementsForSlot` (`:53`) does the same for slots. Three `template.json` files gained `componentRef: "panel"` on `panel-bg-visual`. Measured on the real path: effects now **do** reach pixels — `background-image` (halftone) ×1, `border-bottom` (editorial-rule) ×4, component border ×3 per system, at each system's own intensity (comic halftone 0.9 vs editorial 0.08). Two teeth-checks: neutering the `effectRef` map fails `instantiate.test.ts:68` **and** `design-systems.pw.ts:71` (`rgbaAlpha` throws rather than defaulting — no `?? 0` masking this time). `schema.ts`'s stale *"not schema-embedded"*/*"Known Gap"* comments are gone (**A-9 fixed**) |
+| **B-6** | 8B's proof test validated its own workaround | **FIXED** | `themeSpecFor` is deleted; `design-systems.pw.ts:39` calls `toThemeSpec(system)` directly, and `deckFor` (`:28-51`) builds from `CATALOG` + `readMaxCapacityFixture` + `instantiate` instead of hand-built `shape` elements. Teeth-check — the one that mattered: re-breaking `toThemeSpec` to drop `componentStyles`/`effects` now makes the **Playwright test fail** (it passed against the same regression last round), alongside `design-systems.test.ts:86` |
+| **B-7** | axe pass never saw a shipped design system | **FIXED (with a scope caveat, A-14)** | `render.pw.ts:150-152` loops `editorial`/`comic`/`brutalist` through `toThemeSpec` and asserts both `critical` and `color-contrast` violations are empty per system. Teeth-check by injecting a real regression rather than by reverting: recolouring `comic.body` to `#FFF3D8` makes the test fail on `color-contrast` at `:168`. So it genuinely evaluates shipped colours now |
+| **B-8** | `PRAGMA foreign_keys = ON` uncovered | **FIXED** | New `apps/api/test/control-ledger.test.ts` opens through `openControlLedger(':memory:')` and asserts `PRAGMA foreign_keys` is 1. Teeth-check: deleting `db.ts:20` makes it fail `Expected 1, Received 0` |
+| **A-1** | Contrast failures in the shipped systems | **FIXED for all three named roles; two carried forward** | Recomputed WCAG 2.x relative luminance over **every** type role and component pair in all three systems, independently of their test. `comic.stat-value` `#2FA8A0` → `#008A85` = **3.92:1** (was 2.70) at 110px; `brutalist.eyebrow`/`agenda-number` `#FF5A1F` → `#E04412` = **3.81:1** (was 2.83). `editorial.ts` correctly untouched. `design-systems.test.ts:120` guards exactly those three at the 3:1 floor, with teeth: restoring the old hexes fails it at `comic.stat-value 2.698…`. Still open: **comic's `#FF4B6E` accent remains at 3.01:1** (eyebrow / headline-lg / agenda-number — passing by 0.01, unchanged), and `comic.badge-label` on `badge-bg` is **3.01:1 at 22px/400**, below the 4.5:1 normal-text floor *inside its own badge*. See A-15 |
+| **A-9** | Stale `schema.ts` comment + dangling README reference | **FIXED** | Neither *"not schema-embedded"*, *"Known Gap"* nor *"Reserved for future"* appears in `packages/templates/src/schema.ts`. (`packages/templates/README.md` still does not exist, but nothing points at it any more) |
+| **A-10** | Duplicate React keys | **FIXED** | `elements/index.tsx:37,65-72` disambiguate runs and paragraphs by prior-occurrence count, so two identical runs in one paragraph no longer collide |
+| **A-11** | `role="group"` + `tabIndex={0}` on every element | **FIXED** | Both are gone from `render.tsx`; `aria-hidden` is now the only per-element a11y attribute (`:59`). Asserted negatively in two places — `render.test.tsx:156-157` (`not.toContain('role="group"')`, `not.toContain('tabindex="0"')`) and `render.pw.ts:111` |
+| **A-12** | OFL 1.1 licence text not reproduced | **FIXED** | `fonts/LICENSES.md` now carries the full OFL 1.1 verbatim — Preamble, Definitions, Permission & Conditions 1–5, Termination, Disclaimer (`:15-94`) — above the 12-file provenance table. One residual, A-16 |
+| **A-2** | `renderDeckToHtml` embeds no fonts | **CARRIED FORWARD, correctly** | `ThemeSpec` (`deck-schema/src/index.ts:69-76`) still carries no font assets; `packages/render/src` contains no `@font-face`, `.woff2` or `data:font`. `fontFaceCss()` exists but is consumed only by `packages/templates`' own barrel and its own test — `packages/render` never calls it, and it emits relative `./fonts/` URLs rather than inlined bytes, so wiring it as-is would still not satisfy "inlined fonts". This is a schema/architecture decision, not a fix-pass item; my prior recommendation to settle it **before tasks 11 and 12** stands and is now the oldest open item in the wave |
+| **A-3** | Synthetic `deck-stage:ready` in `renderDeckToHtml` | **CARRIED FORWARD** | `render.tsx:83` still dispatches the event from an inline `<script>` with no runtime and no font/image gating. Blocks nothing today; task 11's PDF export must not wait on it |
+| **A-4** | Authored image `alt` discarded; `<img>` has no `src` | **CARRIED FORWARD** | `elements/index.tsx:139` is still `alt={element.semanticRole}`, and the `<img>` still emits no `src`. `ImageElement` has no `alt` field. Task 10's golden fixture needs images |
+| **A-5** | Physical deletion leaves the user id in the WAL | **CARRIED FORWARD** | No `secure_delete` or `wal_checkpoint` anywhere in `apps/api/src` |
+| **A-6** | `OAuthStateStore` grows without bound | **CARRIED FORWARD** | `auth/state.ts` still removes entries only in `consume()`; no sweep, no size cap |
+| **A-7** | No test exercises concurrency | **CARRIED FORWARD** | Unchanged; the property still holds by construction |
+| **A-8** | `catalog.test.ts:55` claims "schema-valid", asserts `JSON.parse` | **CARRIED FORWARD** | Wording unchanged at `:55-58`; the real property is still proven at `instantiate.test.ts:34`. Wording only, as accepted |
+
+#### Regression Checks On Untouched Wave-2 Guarantees
+
+Both items named in the dispatch live outside the fix window; I re-verified them rather than assume.
+
+- **SVG readiness gate (`deck-stage.ts:362-367`) — intact, with teeth.** `#waitForSvgImage` prefers promise-based `decode()` and keeps the listener path only as a fallback. Teeth-check: deleting the `decode` branch fails **both** `deck-stage.pw.ts:124` ("already finished loading before the component upgraded") and `:141`. No synthetic `load` dispatch survives in either test.
+- **`catalogRef`/`assetId` identifier grammar (`deck-schema/src/index.ts:10`) — intact, with teeth.** `/^(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/` still backs `AssetId`/`ElementId`/`SlideId`/`DocumentId`, every `styleRef`/`typeRef`/`colorRef`, `catalogRef` (`:237`) and every `DiagramSpec` id. Relaxing it to `z.string().min(1)` fails `deck-schema/test/index.test.ts:217` ("rejects unsafe catalog, asset, and diagram style references"). `data:` URIs, `..` traversal and external URLs are all structurally refused.
+- **Migration version guard — behaviour correct, coverage absent.** Probed `migrateWithSnapshot` directly: `-1`, `1.5`, `'1'`, `NaN`, `Infinity`, `null`, `true`, `{}` all throw `schemaVersion must be a non-negative integer`; `3` throws `Unsupported schema version: 3`. But **no test asserts any of this** — `deck-schema/test/index.test.ts` covers only the v0 and v1 happy paths (`:265,278`). See A-17.
+
+#### New Findings
+
+**N-1. `apps/api/src/auth/return-to.ts:28-29` — [critical] B-1's open redirect is still live. The fix's own normalization created a new bypass family.**
+
+The prefix guards at `:12-17` are applied to the **raw candidate**, but the value **returned** at `:29` is the URL parser's *normalized* pathname. `..` segments pop before serialization, so a candidate that starts with a single `/` can serialize to a protocol-relative URL:
+
+```
+sanitizeReturnTo("/..//evil.example")           -> "//evil.example"
+sanitizeReturnTo("/a/../..//evil.example")      -> "//evil.example"
+sanitizeReturnTo("/%2e%2e//evil.example")       -> "//evil.example"
+sanitizeReturnTo("/./..//evil.example")         -> "//evil.example"
+sanitizeReturnTo("/x/..//evil.example")         -> "//evil.example"
+sanitizeReturnTo("/..\\\\evil.example")           -> "//evil.example"
+sanitizeReturnTo("/..//evil.example/p?a=1#b")   -> "//evil.example/p?a=1#b"
+```
+
+The origin check at `:28` passes because the *candidate resolved against the placeholder* is same-origin — it is the **output** that is dangerous, and the output is never re-checked.
+
+Proven end to end in real Chromium against the real function and real Hono, mirroring the route's own call (`auth/routes.ts:40` sanitizes, `:41` stores in state, `:75` `c.redirect(consumed.returnTo)`):
+
+```
+attacker return_to    : "/..//127.0.0.1:4402/phish"
+after sanitizeReturnTo: "//127.0.0.1:4402/phish"
+Location header       : "//127.0.0.1:4402/phish"
+landed on             : http://127.0.0.1:4402/phish
+page content          : ATTACKER SITE
+```
+
+Same chain, same severity, same falsified checkbox as B-1: a victim clicks `/api/auth/github?return_to=/..//evil.example`, completes a **real** GitHub sign-in, and the trusted origin hands them to the attacker at the highest-trust moment. 18 of my 25 hostile inputs are correctly rejected and the whole backslash/tab/newline/scheme family is genuinely dead — this is one uncovered class, not a wholesale failure.
+
+*Fix:* validate the **serialized result**, not just the candidate. After `:28`, build the path first and re-reject:
+```ts
+const path = resolved.pathname + resolved.search + resolved.hash
+return path.startsWith('//') || path.startsWith('/\\') ? '/' : path
+```
+Equivalently, assert `new URL(path, PLACEHOLDER_ORIGIN).origin === PLACEHOLDER_ORIGIN` on the output. Add `/..//evil.example`, `/a/../..//evil.example`, `/%2e%2e//evil.example` and `/..\evil.example` to `auth.test.ts:53` — the existing block is the natural home.
+
+**N-2. `.env.example` + `docs/trd.md` — [medium-high] the B-3 fix introduced a required production env var and a trust boundary, and recorded neither.**
+
+`config.ts:60,67` make `PUBLIC_ORIGIN` a hard production requirement, and `Dockerfile:29` sets `NODE_ENV=production` — so the container **refuses to boot** without it. Verified:
+
+```
+docker run … (no PUBLIC_ORIGIN)  ->  error: Production requires finite operator values for: PUBLIC_ORIGIN
+docker run … PUBLIC_ORIGIN=https://app.example  ->  /api/health {"status":"ok"}
+```
+
+Failing closed is the right behaviour. The defect is that `.env.example` lists **17 variables and none of them is `PUBLIC_ORIGIN`**, so an operator following the committed template cannot start the service. This is the same shape as wave 1's A-4 (`PORT`/`DATA_DIR` missing), which was accepted as a real gap. Separately, my B-3 note asked that the TLS-termination posture be recorded either way; `docs/trd.md` still contains no `PUBLIC_ORIGIN`, `TLS` or termination statement, even though `sessions/cookies.ts` sets `secure: true` against a plain-HTTP `EXPOSE 3000`, which only makes sense behind a terminator.
+*Fix:* add `PUBLIC_ORIGIN=` to `.env.example`, and one sentence in `docs/trd.md` stating that the service runs behind a TLS terminator and that `PUBLIC_ORIGIN` is the browser-facing origin the CSRF check compares against. Note `.env.example` and `docs/trd.md` are outside every fix agent's file scope — this is a PM/PL call.
+
+**N-3. `apps/api/src/config.ts:21` — [medium] the development default `PUBLIC_ORIGIN` is `http://localhost`, with no port, so every realistic dev browser origin is 403'd.**
+
+Probed against the real `createApp` with `loadConfig({})`:
+
+```
+dev default publicOrigin = "http://localhost"
+Origin http://localhost:3000  -> 403  (CSRF rejected)
+Origin http://localhost:5173  -> 403  (CSRF rejected)
+Origin http://127.0.0.1:3000  -> 403  (CSRF rejected)
+Origin http://localhost       -> 401  (CSRF passed)
+```
+
+Nothing in this project serves port 80: the container is `:3000` and Vite defaults to `:5173`. So with no `PUBLIC_ORIGIN` set, account deletion and sign-out are unreachable from a browser in local development — the *same* "fails closed for legitimate users" shape as the original B-3, relocated from the derivation into the default value. It fails safe rather than open, and it is one env var away from correct, which is why this is medium and not high. Compounds N-2: with the variable absent from `.env.example` a developer has no signpost to the cause.
+*Fix:* default to `http://localhost:${port}` (derived from the already-parsed `port`), or make `PUBLIC_ORIGIN` required in **all** modes now that it is documented. Add a test asserting the dev default accepts an origin on the configured port.
+
+#### New Advisories (Do Not Block Gate 2)
+
+- **A-13 — `hard-shadow` reaches no pixel in any system, and `badge`/`stat` component styles reach no element.** A repo-wide grep of `packages/templates/catalog/` finds only two effect names cited: `editorial-rule` (×4 templates) and `halftone` (×1). Measured on the real path, `box-shadow` count is **0** for editorial, comic **and** brutalist. Comic declares `hard-shadow` at intensity **0.85** as a co-dominant signature (asserted by `design-systems.test.ts:78`) and it is decorative-only vocabulary that no template asks for. Likewise `componentStyles.badge` and `componentStyles.stat` are validated by tests but cited by no `componentRef` in the catalog. B-5's mechanism is fixed; its *coverage* is 2 of 3 effects and 1 of 3 component roles. Comic's differentiation still rests on halftone alone. Cheapest close: cite `hard-shadow` on the `panel-bg-visual`/`claim-decor` fixed elements and `badge`/`stat` on the templates that already have those slots.
+- **A-14 — the axe pass evaluates real systems but only two roles of each.** `render.pw.ts:33-46`'s fixture cites `typeRef: 'body'` and `colorRef: 'paper'` only, so swapping in `toThemeSpec(system)` exercises `body` on `paper` and nothing else. None of the roles A-1 flagged — `stat-value`, `eyebrow`, `agenda-number`, `headline-lg`, `badge-label` — is in the DOM axe sees, which is why A-15 below survives a green suite. Rendering `deckFor(...)` from the real catalog (as `design-systems.pw.ts:28` now does) would put all of them under axe at once.
+- **A-15 — two contrast items survive, one of them a genuine AA failure.** `comic.badge-label` `#FFF6E0` on `badge-bg` `#FF4B6E` is **3.01:1 at 22px/400** — normal text by WCAG, so the floor is 4.5:1. It fails *inside its own badge*, which is the one place it is meant to be correct, so this is not the "cited outside a badge" hazard I raised last round but a plain AA miss. (`editorial`'s equivalent is 4.81:1 and passes; `brutalist`'s is 17.79:1.) Separately, comic's `#FF4B6E` accent is still exactly **3.01:1** on paper for `eyebrow`/`headline-lg`/`agenda-number` — passing the large-text floor by 0.01, with no margin for a paper-tone change. And `design-systems.test.ts:120` guards only the three roles I named, at only the 3:1 floor: a fourth bad role, or a small-text role, would ship green. A size-aware sweep over **all** type roles and component pairs is ~15 lines and would have caught `badge-label` itself. **Not waiving any of this** — it is slide-quality output, which is this product's deliverable.
+- **A-16 — OFL §2 asks for the copyright notice, not only the licence.** `fonts/LICENSES.md` reproduces the licence in full (A-12 closed) and names each foundry/designer in the table, but does not carry the per-family copyright statements (`Copyright 2019 The Literata Project Authors`, etc.) that OFL condition 2 pairs with "this license". Twelve lines closes it completely.
+- **A-17 — the migration version guard is untested.** `deck-schema/src/index.ts:428-433` is untrusted-input hardening added during wave 2's fix round, and it works (probed: 8 hostile `schemaVersion` values plus a too-new version all rejected with the right messages). No test asserts it. This is the same shape as B-8 — correct code on a path no test enters. Four `expect(() => migrate(…)).toThrow()` lines close it.
+- **A-18 — an element in `elements` but in neither order is schema-legal and silently unrendered.** `Slide`'s `superRefine` (`:284-317`) checks that every id in an order exists and is unique, but never that every element appears in `rootOrder`. Probed: a slide with an orphan element passes `Slide.safeParse`. B-4's ticked checkbox — *"every element in the document has exactly one matching node"* — is therefore satisfied by `instantiate()` output but not guaranteed by the document model. Not live today (nothing constructs an orphan), but task 9's editor store and task 14's pipeline both mutate slides. One `superRefine` clause asserting `rootOrder` covers `Object.keys(elements)` makes the property structural.
+- **A-19 — three v1 catalog directories were edited in place and the tripwire lock regenerated.** `problem/1/`, `two-column/1/` and `two-column-dense/1/template.json` gained `componentRef: "panel"`, and `catalog/manifest.lock.json` was updated to match. The tripwire still has teeth (full suite green, and it re-passed after every teeth-check restore), but editing a published version rather than minting `2/` is precisely what "immutable versioned directories" exists to prevent. Correct call while nothing is released — worth a `docs/decisions.md` line recording that in-place v1 edits are permitted until first release, so the rule is not quietly eroded later.
+- **A-20 — `deck-stage.ts:188` `innerHTML` remains the one markup sink in the renderer.** Re-read it: a static template literal with **zero interpolation**, fed only the built-in prev/next/reset chrome, and the wave-3 diff did not touch it. Inert today. Flagged per the dispatch because it is a standing sink one careless edit away from live, and `packages/render/src` is otherwise clean — no `fetch`, no `dangerouslySetInnerHTML`, no raw URL rendering anywhere in `render.tsx` or `elements/index.tsx`.
+- **A-21 — `config.ts:39` throws a raw `TypeError: Invalid URL` on a malformed `PUBLIC_ORIGIN`.** `parsePublicOrigin` hand-writes a good message for the *wrong-shape* case at `:41` but lets the constructor's own error escape for the *unparseable* case, so `PUBLIC_ORIGIN=app.example` fails startup with no mention of the variable name. Cosmetic; boundary validation is otherwise correct and fails closed.
+- **A-22 — bookkeeping, for the PM not for PG.** No file under `docs/` has an mtime inside the fix window (`plan.md` and `progress.md` both 00:41), so no fix agent wrote to `docs/` — correct per the wave contract — but equally, nothing records this round yet. `docs/progress.md` has no fix-round entry and no checkbox moved.
+
+#### Design (impeccable detect)
+
+Impeccable is installed at `.claude/skills/impeccable/`. Ran `npx impeccable detect` (Node **v24.14.0**, relative forward-slash paths) on every UI file in the delta — `packages/render/src/render.tsx`, `packages/render/src/elements/index.tsx`, `packages/render/src/theme-to-css.ts`, `packages/templates/src/design-systems/comic.ts`, `packages/templates/src/design-systems/brutalist.ts` — and again on `packages/render/src` and `packages/templates/src` as directories: **exit 0, zero output, no findings. No unwaived design findings.** As last round, `docs/DESIGN.md` governs the editor chrome (`apps/web`), which this delta does not touch, and the detector does not reach the product's *output* design — so I again computed WCAG contrast by hand across all three shipped systems (every type role and every component pair, size-aware). Results are **A-1 (fixed)** and **A-15 (two items open)**. **I am waiving nothing.**
+
+#### Smoke Test
+
+`tsc --noEmit` → **0** · `biome check .` → **149 files, 0 findings** · `bun test` ×4 → **212 pass / 2 skip / 0 fail**, identical every run, and identical under `unshare -rn` · `playwright test` ×2 → **8 passed** · `docker build` → exit **0**, container serving `/api/health`, plus live probes of `POST /api/auth/signout` (403 cross-origin, 403 no-Origin) and `DELETE /api/account` (403 no-Origin, 401 with the configured origin) · real-Chromium open-redirect chain → **ESCAPED (N-1)** · dev-default CSRF origin probe → **403 on every realistic origin (N-3)** · container boot without `PUBLIC_ORIGIN` → **fails closed (N-2)** · secret sweep across 190 files + byte-match of every real `.env` value → **0 hits**.
+
+Teeth-checks performed, each restored and `diff`-verified byte-identical: `sanitizeReturnTo` → 1 fail · `server.ts` middleware order → 1 fail · `csrf.ts` fail-open → 1 fail · `csrf.ts` url-derived origin → 1 fail · `db.ts` PRAGMA → 1 fail · `render.tsx` `domOrder` → 3 unit + 2 Playwright fails · `instantiate.ts` `effectRef` → 1 unit + 1 Playwright fail · `toThemeSpec` → 1 unit + **1 Playwright fail (B-6 now bites)** · `comic.body` contrast injection → 1 Playwright fail · old A-1 hexes → 1 fail · `deck-stage.ts` `decode()` → 2 Playwright fails · `deck-schema` identifier regex → 1 fail. Full suite returned to 212/0 and the catalog sha256 tripwire re-passed after every restore.
+
+**REJECT**
+
+### Re-Review — Wave 3 Fix Round 2 (30/07/26)
+
+**Verdict: Approve.** Narrow delta pass over the six files with an mtime inside the fix window (07:04–07:18): `apps/api/src/auth/return-to.ts`, `apps/api/src/config.ts`, `apps/api/test/{auth,server,account}.test.ts`, `.env.example`. **N-1, N-2 and N-3 are all genuinely fixed**, each proved by reverting the production change and watching the right test fail for the right reason. The `account.test.ts` fixture repair did not defeat its own test. `admission/csrf.ts` (05:46), `server.ts` (05:46) and `auth/routes.ts` (23:55 prior day) are **outside the window** — B-2/B-3's mechanisms are untouched, re-confirmed by mtime and by re-reading both. Five new items, all **advisory**; none blocks Gate 2.
+
+Working tree restored **byte-identical**: all eight files I touched `diff`-clean against pre-review copies, `return-to.ts` back to sha256 `d46d59f9…` and `config.ts` to `5e74e517…`, `git status --short` back to the same **41** entries, HEAD **`74da19e`**, `main`, 0 stashes, 1 branch, root configs (`bun.lock`, `package.json`, `tsconfig.base.json`, `biome.json`, `playwright.config.ts`, `Dockerfile`) untouched, and **no probe file left in the repo** — every script lives in the scratchpad.
+
+#### Prior Findings — Verification
+
+| # | Prior finding | Result | Evidence + my own teeth-check |
+| - | ------------- | ------ | ----------------------------- |
+| **N-1** | Open redirect via output normalization (`/..//host`) | **FIXED** | `return-to.ts:30-31` now re-validates the **serialized** result. Three independent proofs, below. Teeth-check: replacing `:30-31` with a bare `return resolved.pathname + resolved.search + resolved.hash` produces **3 fails** — `auth.test.ts:42,46,50`, each `Expected: "/"` / `Received: "//evil.example"`. Removing only the blanket backslash rule at `:16` produces **1 fail** — `auth.test.ts:54`, `Received: "/evil.example"`. That is the PM's reported 5 (3 + 1 + 1 with N-3), **reproduced independently**, and it confirms the new guards are load-bearing rather than decorative |
+| **N-2** | `PUBLIC_ORIGIN` absent from `.env.example` | **FIXED** | `.env.example:6`, immediately after `DATA_DIR=` (`:5`). The template now carries **18** variables. Cross-checked the other direction too: every variable name present in the real `.env` also appears in `.env.example` — **0 missing**. An operator following the committed template can now boot the container. (Values read by name only; nothing printed, copied or fixtured) |
+| **N-2b** | `docs/trd.md` TLS-termination / trust-boundary sentence | **CARRIED FORWARD** | `docs/trd.md` still contains no `PUBLIC_ORIGIN`, `TLS` or termination statement, while `sessions/cookies.ts` sets `secure: true` against a plain-HTTP `EXPOSE 3000`. Deferred to wave 4 by PM decision, recorded here as an open doc item, **not** counted against this round |
+| **N-3** | Dev default `http://localhost` 403s every realistic browser origin | **FIXED** | `DEFAULT_PUBLIC_ORIGIN` is deleted (grep across the whole tree: **0 references**, no dangling constant), `port` is hoisted to a local at `config.ts:56`, and `:78` is `publicOrigin ?? ` + backtick `http://localhost:${port}`. Probed: `PORT` unset → `http://localhost:3000`, `3000` → `:3000`, `5173` → `:5173`, `8080` → `:8080`. This is exactly right for the **current** serving posture — `server.ts:31,52` serve `apps/web/dist` from the API itself, so the only browser origin that exists today *is* `http://localhost:3000`. Teeth-check: restoring the bare `'http://localhost'` default fails `server.test.ts:17` with `Expected: "http://localhost:5173"` / `Received: "http://localhost"` |
+| **Fixture repair** | `account.test.ts` six hardcoded `origin: 'http://localhost'` headers | **FIXED — and it did not defeat its own test** | `account.test.ts:12` is `const DEV_ORIGIN = loadConfig({}).publicOrigin`. Both negative cases survive **with teeth**, and each asserts twice — status *and* that the user row is still there, so a fail-open would be caught even if the status assertion were wrong: `:135-149` cross-origin `https://evil.example` → **403** + `users` count still 1; `:151-162` **missing** `Origin` → **403** + count still 1. Neither reads `DEV_ORIGIN`, so the repair cannot have weakened them. `:164-176` still proves the positive half (configured `https://app.example` → 200) |
+
+#### N-1 — Three Independent Proofs
+
+**1. Fuzz over 67 inputs, judged by browser resolution rather than by eyeballing.** I resolved every output against a trusted base and failed anything whose origin moved, plus anything not starting with `/`:
+
+```
+TOTAL 67, dangerous outputs: 0
+```
+
+The whole dot-segment family that broke B-1's first fix is dead — `/..//evil.example`, `/a/../..//evil.example`, `/%2e%2e//evil.example`, `/%2E%2E//evil.example`, `/./..//evil.example`, `/x/..//evil.example`, `/../..//evil.example`, `/a/b/../../..//evil.example`, `/.//..//evil.example`, `/..//..//evil.example`, `/%2e%2e/%2e%2e//evil.example`, `/..///evil.example`, `/..//@evil.example`, `/..//` + tab/newline/CR/space + `evil.example`, and `/..//evil.example/p?a=1#b` **all return `'/'`**. Legitimate paths pass through unharmed: `/editor/deck-1`, `/dashboard`, `/d?x=1#y`, `/a/b/c?d=1&e=2#f`, `/editor/deck-1?tab=slides#el-3`, `/a%20b`, `/%E2%9C%93`, `/search?q=hello%20world`, `/x?a=%2F%2Fevil`.
+
+**2. Real Chromium — the item the dispatch flagged as a potential blocker. It is not one.** The percent-encoded survivors are genuinely safe. Stood up two real Bun/Hono servers (victim `:4712`, attacker `:4713`), mirrored the route exactly (`c.redirect(sanitizeReturnTo(...))`), drove headless Chromium through the redirect and compared **`new URL(page.url()).origin`** against the victim origin:
+
+```
+"/%5C%5C127.0.0.1:4713/phish"      Location="/%5C%5C127.0.0.1:4713/phish"       origin=http://127.0.0.1:4712  same-origin
+"/%2f%2f127.0.0.1:4713/phish"      Location="/%2f%2f127.0.0.1:4713/phish"       origin=http://127.0.0.1:4712  same-origin
+"/..%2f%2f127.0.0.1:4713/phish"    Location="/..%2f%2f127.0.0.1:4713/phish"     origin=http://127.0.0.1:4712  same-origin
+"/..%5c%5c127.0.0.1:4713/phish"    Location="/..%5c%5c127.0.0.1:4713/phish"     origin=http://127.0.0.1:4712  same-origin
+"/%09//127.0.0.1:4713/phish"       Location="/%09//127.0.0.1:4713/phish"        origin=http://127.0.0.1:4712  same-origin
+"/..;//127.0.0.1:4713/phish"       Location="/..;//127.0.0.1:4713/phish"        origin=http://127.0.0.1:4712  same-origin
+"/@127.0.0.1:4713/phish"           Location="/@127.0.0.1:4713/phish"            origin=http://127.0.0.1:4712  same-origin
+"/%2e%2e//127.0.0.1:4713/phish"    Location="/"                                 origin=http://127.0.0.1:4712  same-origin
+"/..//127.0.0.1:4713/phish"        Location="/"                                 origin=http://127.0.0.1:4712  same-origin
+"/%5c127.0.0.1:4713/phish"         Location="/%5c127.0.0.1:4713/phish"          origin=http://127.0.0.1:4712  same-origin
+"/%252f%252f127.0.0.1:4713/phish"  Location="/%252f%252f…"                      origin=http://127.0.0.1:4712  same-origin
+"/／／127.0.0.1:4713/phish"          Location="/%EF%BC%8F%EF%BC%8F…"               origin=http://127.0.0.1:4712  same-origin
+"/%5C%5C%5C127.0.0.1:4713/phish"   Location="/%5C%5C%5C…"                       origin=http://127.0.0.1:4712  same-origin
+"/%2F%2F127.0.0.1:4713/phish"      Location="/%2F%2F…"                          origin=http://127.0.0.1:4712  same-origin
+
+REAL CHROMIUM CROSS-ORIGIN ESCAPES: 0 / 14
+```
+
+Every one of these landed on the **victim** origin serving *"VICTIM SITE"*; the attacker page was never reached. **The PM's reading is confirmed:** `%2f`/`%5c`/`%09` are not decoded during URL resolution, so Chromium treats them as literal escapes inside a same-origin path. I also added a wider-net case, full-width solidus `U+FF0F`, which the URL parser percent-encodes rather than treating as a separator. Also worth recording that my first pass on this probe reported "10/12 escaped" because the detector was matching the attacker's **port number inside the path string** — a false positive I caught and corrected, which is exactly why the origin comparison and not a substring test is the right instrument here.
+
+**3. `sanitizeReturnTo` is the sole gate — confirmed, not assumed.** `grep -rn 'redirect\|Location\|returnTo'` over `apps/api/src` finds exactly two `c.redirect` calls: `routes.ts:42` emits the *constructed* GitHub authorize URL, and `routes.ts:75` emits `consumed.returnTo`. The only writer of `returnTo` is `OAuthStateStore.issue()` (`state.ts:19-21`), called once at `routes.ts:41` on the value sanitized at `:40`. `consume()` (`state.ts:26-30`) is read-only. `deps.stateStore` is injectable, but only for tests. **No second path to that header exists.**
+
+**Bonus class I checked because the output lands in a header, and the delta did not mention it — clean.** CRLF/NUL response-splitting into the `Location` value: 7 payloads, **0** raw CR/LF/NUL/space in any output. `/x\r\nSet-Cookie: pwned=1` → `"/xSet-Cookie:%20pwned=1"`; `/x\rLocation: https://evil.example` → `"/"`; `//evil.example\r\n` → `"/"`; NUL → `%00`, DEL → `%7F`.
+
+#### `DEV_ORIGIN` Determinism — Cannot Be Perturbed By Ambient Env
+
+`loadConfig({})` passes an explicit empty record, so `env.PORT` and `env.NODE_ENV` are both `undefined` and `process.env` is never consulted (`config.ts:51,54,56`). Verified empirically rather than by reading:
+
+```
+[                                                      ] -> http://localhost:3000
+[PORT=9999                                             ] -> http://localhost:3000
+[NODE_ENV=production                                   ] -> http://localhost:3000
+[PORT=9999 NODE_ENV=production PUBLIC_ORIGIN=https://poison.example] -> http://localhost:3000
+```
+
+And the **whole suite** under the same four poisoned environments (plus `PORT=80`): **217 pass / 2 skip / 0 fail every time.** The suite cannot be made non-deterministic by a developer's shell.
+
+#### Production Behaviour — Unchanged
+
+`PUBLIC_ORIGIN` is still a hard production requirement, through **both** entry points, and the port hoist did not leak into the check (the guard tests the *parsed* `publicOrigin`, which stays `undefined` when unset, not the defaulted value):
+
+```
+NODE_ENV=production, no PUBLIC_ORIGIN               -> THROW  Production requires finite operator values for: PUBLIC_ORIGIN
+options.production, no PUBLIC_ORIGIN                -> THROW  (same)
+NODE_ENV=production + PORT=8080, no PUBLIC_ORIGIN    -> THROW  (same — the derived default does NOT satisfy the guard)
+NODE_ENV=production + PUBLIC_ORIGIN                 -> OK     https://app.example
+```
+
+Boundary validation on an operator-supplied value is also intact: a path, query, hash or non-http(s) scheme each throws the hand-written message. Confirmed in a **real container**: without `PUBLIC_ORIGIN` it refuses to boot with `error: Production requires finite operator values for: PUBLIC_ORIGIN`; with it, `/api/health` → `{"status":"ok"}`, and live over HTTP — `POST /api/auth/signout` **403** cross-origin, **403** no-`Origin`, **200** configured-origin; `DELETE /api/account` **403** no-`Origin`, **401** configured-origin. Container logs: **0** secret-shaped hits.
+
+#### New Findings — All Advisory, None Blocking
+
+- **N-4 — `return-to.ts:31`'s `path.startsWith('/\\')` is unreachable dead code.** The WHATWG parser converts `\` to `/` in the path of a special-scheme URL, so a serialized `pathname` can never begin with `/\`. Proved over 8 backslash samples: `/a\b` → `/a/b`, `/..\x` → `/x`, `/x\\y` → `/x//y`, `/?a=\` → `/?a=\` (in the *query*, not the path), and the two that could conceivably reach it (`/\`, `/\\`) make the constructor throw and are caught at `:25`. **0 of 8** serialize to a path starting with `/\`. Harmless and in the fail-safe direction, but it is dead defense that reads as load-bearing. *Fix:* drop it, or keep it with a one-line note that it is belt-and-braces.
+- **N-5 — the blanket `candidate.includes('\\')` at `:16` is redundant for security, over-rejects, and the test that forces it is mis-premised. I dissent from calling this purely cosmetic — the test wording is the problem.** With `:16` removed and everything else intact, my full 67-case corpus still yields **0 dangerous outputs**: the output re-validation alone is sufficient, and the backslash family degrades to same-origin paths, not to escapes. What `:16` uniquely does is (a) reject `/search?q=a\b` → `'/'` and (b) make `auth.test.ts:53-55` pass. On the over-rejection I **agree with the PM that it is cosmetic today** and I verified why rather than assuming: `apps/web/src/index.ts` is a 10-byte `export {}` stub, there is **no `vite.config`** and no route table anywhere, and deck ids cannot contain `\` under `deck-schema`'s identifier grammar — so no legitimate product path is broken, and the failure mode is `'/'`, never an escape. On the test, though: **the dispatch's hypothesis is correct.** `/..\evil.example` normalizes to `/evil.example` — a same-origin, harmless path — so demanding `'/'` there was over-strict, and it is precisely what forced the blanket rule. The test's name, *"rejects a backslash path that normalizes to a protocol-relative URL"*, asserts a property that **is not true**; a future maintainer who correctly reasons that `:16` is redundant will delete it, see that test fail, and conclude they reintroduced B-1. *Fix (pick one, do not do neither):* keep `:16` and rename the test to what it actually checks — blanket defense-in-depth rejection of any backslash — or drop both together. Do not drop `:16` while leaving the test.
+- **N-6 — `config.ts:78`: the *derived* dev origin is not URL-validated, unlike the operator-supplied one.** `PORT=65536` (and `99999`, `999999999`) passes `parsePositiveInt` and yields `publicOrigin: "http://localhost:65536"`, which `new URL()` **cannot parse** — while the byte-identical value supplied as `PUBLIC_ORIGIN` throws at startup. A validation asymmetry introduced by this delta. It fails closed (`requireSameOrigin` is a plain string compare, no browser can send an Origin with a port above 65535, and `Bun.serve` would reject the port anyway) and it is dev-only, so **low**. *Fix:* bound `PORT` to 1–65535 in `parsePositiveInt`'s caller, or run the derived default through `parsePublicOrigin` too.
+- **N-7 — the fix is right for today's posture but Vite dev will re-open N-3's exact shape.** The default is the **API's** port. `docs/trd.md` and `AGENTS.md` both specify React + Vite for `apps/web`; a Vite dev server listens on `:5173` and the browser `Origin` stays `:5173` even behind a Vite proxy (`changeOrigin` rewrites `Host`, not `Origin`), so with defaults the CSRF guard will 403 sign-out and account deletion again the moment the SPA dev server lands. **Not live today** — no `vite.config`, `apps/web` is a stub, and the API serves the SPA itself — and `.env.example`'s new `PUBLIC_ORIGIN=` is now the signpost. Carry it to whoever wires the dev server (tasks 11/13): set `PUBLIC_ORIGIN=http://localhost:5173` in the dev env, or document it.
+- **N-8 — `return-to.ts:3-9` still does not explain the output re-validation, which is the one non-obvious thing in the function.** The comment describes only the candidate-side contract and its now-superseded *"authority-position handling of backslashes"*. The `why` a reader will get wrong — that `..` segments pop **during serialization**, so guarding the candidate is not the same as guarding the output — is exactly what produced B-1's second bypass, and per `AGENTS.md`'s comment rule (*comment only when the why is non-obvious*) it earns one sentence. Documentation only.
+- **A-21 unchanged** — `config.ts:38` still lets the constructor's raw `TypeError: … cannot be parsed as a URL` escape for an unparseable `PUBLIC_ORIGIN`, with no mention of the variable name. Cosmetic, carried forward.
+
+Everything else from the prior round's advisory list (**A-13 through A-20**, and the carried-forward **A-2 – A-8**) is untouched by this delta and stands as written. **A-15's two contrast items remain open and I am still waiving nothing** — `comic.badge-label` at 3.01:1 on `badge-bg` is a plain WCAG AA miss at 22px/400, and comic's `#FF4B6E` accent still passes the large-text floor by 0.01.
+
+#### Design (impeccable detect)
+
+Impeccable is installed at `.claude/skills/impeccable/`. **The delta contains no UI files** — all six are `apps/api/**` TypeScript plus `.env.example`, with no `.tsx`, no `apps/web` source and no stylesheet — so `detect` has nothing in scope this round and the design gate does not apply to it. The renderer and design-system files I ran it against last round (**exit 0, zero findings**) are unchanged: their mtimes are 05:47–05:53, outside the fix window. **No unwaived design findings arising from this delta.**
+
+#### Gates — Re-Run Independently
+
+| Check | Result |
+| - | - |
+| `bunx tsc --noEmit -p tsconfig.base.json` | exit **0** (used `-p` — a bare `bunx tsc --noEmit` prints help and exits 0 without checking, since there is no root `tsconfig.json`) |
+| `bunx biome check .` | **149 files, 0 findings** |
+| `bun test` ×3 | **217 pass / 2 skip / 0 fail**, 1178 assertions, **219 tests across 28 files** — identical every run |
+| `bun test` under 5 poisoned ambient envs | **217 / 2 / 0** every time — suite is env-independent |
+| `unshare -rn bun test` | **identical — 217 pass.** Genuinely offline; no provider quota spent |
+| `bunx playwright test` | **8 passed** |
+| `docker build` | exit **0**; fail-closed without `PUBLIC_ORIGIN` (exact message above); with it, live `/api/health` + 5 CSRF probes as listed |
+| Secret sweep on the delta | 0 secret-shaped literals; every non-trivial real `.env` value byte-matched against all six delta files → **0 occurrences**; container logs → 0 hits. No provider name introduced — the only hits in the delta's neighbourhood are the pre-existing `QWEN_BASE_URL`/`GEMINI_API_KEY` **names** in `.env.example`, which the delta did not add and which are the operator template, not a code path |
+| `deleted_at` | Still absent as a column or flag; the delta introduces none |
+| Restore | 8/8 files `diff`-identical; `return-to.ts` = `d46d59f9…`, `config.ts` = `5e74e517…`; 41 `git status` entries; HEAD `74da19e`, `main`, 0 stashes; root configs untouched; no probe artifact in the repo |
+
+#### Smoke Test
+
+`tsc -p` → **0** · `biome` → **149 files, 0 findings** · `bun test` ×3 (+ offline, + 5 poisoned envs) → **217/2/0** identical throughout · `playwright` → **8 passed** · `docker build` → **0**, container fail-closed then healthy with live 403/403/200 sign-out and 403/401 account probes · **67-case `sanitizeReturnTo` fuzz → 0 dangerous outputs** · **real-Chromium redirect chain, 14 payloads → 0 cross-origin escapes** · CRLF header-injection, 7 payloads → **0** · production `PUBLIC_ORIGIN` requirement → throws on all three no-origin paths.
+
+Teeth-checks performed, each restored and `diff`-verified byte-identical: `return-to.ts` output re-validation → **3 fails** (`Expected "/"` / `Received "//evil.example"`) · `return-to.ts` blanket backslash → **1 fail** (`Received "/evil.example"`) · `config.ts` port-derived default → **1 fail** (`Expected "http://localhost:5173"` / `Received "http://localhost"`). **Five in total, matching the PM's report, reached independently.** Full suite returned to 217/2/0 after every restore.
+
+**APPROVE**
