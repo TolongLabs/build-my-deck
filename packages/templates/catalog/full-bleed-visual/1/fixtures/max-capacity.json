@@ -1,0 +1,19 @@
+{
+  "slots": {
+    "visual": {
+      "kind": "image",
+      "assetId": "asset-live-demo-screenshot",
+      "alt": "Full-screen screenshot of the live product demo"
+    },
+    "caption": {
+      "kind": "text",
+      "paragraphs": [
+        {
+          "runs": [
+            { "text": "The generated deck, open in the browser editor, mid-drag on the headline element.", "marks": [] }
+          ]
+        }
+      ]
+    }
+  }
+}

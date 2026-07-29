@@ -1,0 +1,49 @@
+{
+  "slots": {
+    "eyebrow": {
+      "kind": "text",
+      "paragraphs": [{ "runs": [{ "text": "The Real Bottleneck", "marks": [] }] }]
+    },
+    "headline": {
+      "kind": "text",
+      "paragraphs": [{ "runs": [{ "text": "Great Projects Still Lose On A Rushed, Ugly Deck", "marks": [] }] }]
+    },
+    "body": {
+      "kind": "text",
+      "paragraphs": [
+        {
+          "listStyle": "bullet",
+          "runs": [{ "text": "Teams spend their last working hours in Figma instead of the pitch.", "marks": [] }]
+        },
+        {
+          "listStyle": "bullet",
+          "runs": [{ "text": "A generic template makes six months of work look like a class project.", "marks": [] }]
+        },
+        {
+          "listStyle": "bullet",
+          "runs": [{ "text": "Pasting a README into slides produces walls of text no judge reads.", "marks": [] }]
+        },
+        {
+          "listStyle": "bullet",
+          "runs": [{ "text": "Editing sixty text boxes by hand eats the last hour before demos.", "marks": [] }]
+        },
+        {
+          "listStyle": "bullet",
+          "runs": [{ "text": "Every teammate's slide looks like it came from a different deck.", "marks": [] }]
+        },
+        {
+          "listStyle": "bullet",
+          "runs": [{ "text": "Screenshots land at the wrong ratio and blur under the projector.", "marks": [] }]
+        },
+        {
+          "listStyle": "bullet",
+          "runs": [{ "text": "Nobody agrees on a palette, so the deck reads like three projects.", "marks": [] }]
+        },
+        {
+          "listStyle": "bullet",
+          "runs": [{ "text": "By the time slides look right, there is no time left to rehearse.", "marks": [] }]
+        }
+      ]
+    }
+  }
+}

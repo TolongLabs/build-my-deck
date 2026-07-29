@@ -1,0 +1,30 @@
+{
+  "slots": {
+    "eyebrow": {
+      "kind": "text",
+      "paragraphs": [{ "runs": [{ "text": "Thank You For Watching", "marks": [] }] }]
+    },
+    "headline": {
+      "kind": "text",
+      "paragraphs": [{ "runs": [{ "text": "Let's Make Your Next Deck Judge-Ready", "marks": [] }] }]
+    },
+    "subtitle": {
+      "kind": "text",
+      "paragraphs": [
+        {
+          "runs": [
+            {
+              "text": "Try it free at your next hackathon — no credit card required, nothing to install.",
+              "marks": []
+            }
+          ]
+        }
+      ]
+    },
+    "quote": {
+      "kind": "quote",
+      "quote": "The first draft looked like something our own senior designer had made overnight, not a template a script filled in.",
+      "attribution": "— Beta tester, Cal Hacks 2026 pilot cohort"
+    }
+  }
+}

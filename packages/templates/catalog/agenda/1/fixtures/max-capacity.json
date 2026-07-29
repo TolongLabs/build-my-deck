@@ -1,0 +1,54 @@
+{
+  "slots": {
+    "eyebrow": {
+      "kind": "text",
+      "paragraphs": [{ "runs": [{ "text": "Where We're Headed", "marks": [] }] }]
+    },
+    "headline": {
+      "kind": "text",
+      "paragraphs": [{ "runs": [{ "text": "What We Cover In The Next Five Minutes", "marks": [] }] }]
+    }
+  },
+  "repeaterItems": [
+    {
+      "item": {
+        "kind": "text",
+        "paragraphs": [{ "runs": [{ "text": "The problem every hackathon team hits on demo day", "marks": [] }] }]
+      }
+    },
+    {
+      "item": {
+        "kind": "text",
+        "paragraphs": [
+          { "runs": [{ "text": "Our fix: generate a first draft, then edit, then present", "marks": [] }] }
+        ]
+      }
+    },
+    {
+      "item": {
+        "kind": "text",
+        "paragraphs": [
+          { "runs": [{ "text": "How the pipeline turns a README into six polished slides", "marks": [] }] }
+        ]
+      }
+    },
+    {
+      "item": {
+        "kind": "text",
+        "paragraphs": [{ "runs": [{ "text": "Live demo: regenerate one slide, reskin the whole deck", "marks": [] }] }]
+      }
+    },
+    {
+      "item": {
+        "kind": "text",
+        "paragraphs": [{ "runs": [{ "text": "Roadmap: what ships next and how you can try it today", "marks": [] }] }]
+      }
+    },
+    {
+      "item": {
+        "kind": "text",
+        "paragraphs": [{ "runs": [{ "text": "Q&A — come find us at the sponsor table afterward", "marks": [] }] }]
+      }
+    }
+  ]
+}

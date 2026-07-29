@@ -1,0 +1,66 @@
+{
+  "id": "stat-row",
+  "version": "1",
+  "intents": ["metrics", "traction", "stats"],
+  "slots": {
+    "eyebrow": {
+      "accepts": ["text"],
+      "budget": { "maxChars": 26, "maxLines": 1 },
+      "optional": true,
+      "priority": 4,
+      "frame": { "x": 120, "y": 120, "w": 700, "h": 40, "rotation": 0 },
+      "style": { "typeRef": "eyebrow" }
+    },
+    "headline": {
+      "accepts": ["text"],
+      "budget": { "maxChars": 56, "maxLines": 1 },
+      "optional": false,
+      "priority": 1,
+      "frame": { "x": 120, "y": 180, "w": 1200, "h": 120, "rotation": 0 },
+      "style": { "typeRef": "headline" }
+    }
+  },
+  "fixedElements": [
+    {
+      "id": "rule-top",
+      "kind": "shape",
+      "shape": "line",
+      "frame": { "x": 120, "y": 340, "w": 400, "h": 4, "rotation": 0 },
+      "style": { "colorRef": "rule" },
+      "zOrder": "front",
+      "effectRef": "editorial-rule"
+    }
+  ],
+  "safeAreas": { "margin": 120 },
+  "collisionGroups": [],
+  "repeater": {
+    "id": "stat",
+    "direction": "row",
+    "min": 2,
+    "max": 4,
+    "cellWidth": 390,
+    "cellHeight": 420,
+    "gap": 40,
+    "startX": 120,
+    "y": 420,
+    "itemSlots": [
+      {
+        "name": "value",
+        "accepts": ["text"],
+        "budget": { "maxChars": 8, "maxLines": 1 },
+        "priority": 1,
+        "frame": { "x": 0, "y": 0, "w": 390, "h": 200, "rotation": 0 },
+        "style": { "typeRef": "stat-value" }
+      },
+      {
+        "name": "label",
+        "accepts": ["text"],
+        "budget": { "maxChars": 40, "maxLines": 2 },
+        "priority": 2,
+        "frame": { "x": 0, "y": 220, "w": 390, "h": 120, "rotation": 0 },
+        "style": { "typeRef": "stat-label" }
+      }
+    ]
+  },
+  "compatibleVariants": []
+}

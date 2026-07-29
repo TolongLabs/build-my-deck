@@ -1,0 +1,58 @@
+{
+  "id": "agenda",
+  "version": "1",
+  "intents": ["agenda", "overview", "roadmap"],
+  "slots": {
+    "eyebrow": {
+      "accepts": ["text"],
+      "budget": { "maxChars": 20, "maxLines": 1 },
+      "optional": true,
+      "priority": 4,
+      "frame": { "x": 120, "y": 120, "w": 600, "h": 36, "rotation": 0 },
+      "style": { "typeRef": "eyebrow" }
+    },
+    "headline": {
+      "accepts": ["text"],
+      "budget": { "maxChars": 40, "maxLines": 1 },
+      "optional": false,
+      "priority": 1,
+      "frame": { "x": 120, "y": 170, "w": 1000, "h": 110, "rotation": 0 },
+      "style": { "typeRef": "headline" }
+    }
+  },
+  "fixedElements": [
+    {
+      "id": "rule-under-headline",
+      "kind": "shape",
+      "shape": "line",
+      "frame": { "x": 120, "y": 300, "w": 400, "h": 4, "rotation": 0 },
+      "style": { "colorRef": "rule" },
+      "zOrder": "front",
+      "effectRef": "editorial-rule"
+    }
+  ],
+  "safeAreas": { "margin": 120 },
+  "collisionGroups": [],
+  "repeater": {
+    "id": "agenda-item",
+    "direction": "column",
+    "min": 3,
+    "max": 6,
+    "cellWidth": 1680,
+    "cellHeight": 90,
+    "gap": 8,
+    "startX": 120,
+    "y": 340,
+    "itemSlots": [
+      {
+        "name": "item",
+        "accepts": ["text"],
+        "budget": { "maxChars": 60, "maxLines": 1 },
+        "priority": 2,
+        "frame": { "x": 0, "y": 0, "w": 1680, "h": 90, "rotation": 0 },
+        "style": { "typeRef": "agenda-item" }
+      }
+    ]
+  },
+  "compatibleVariants": []
+}
