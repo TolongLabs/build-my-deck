@@ -55,3 +55,34 @@ Format:
 - **Did not** perform the Impeccable dedup (task 5 of the fix round): `diff -r .claude/skills/impeccable .agents/skills/impeccable` shows the trees are **not** identical — they are provider-specific variants, not accidental duplicates. The `.claude/` tree targets Claude Code (`IMPECCABLE_PROVIDER_ID = "claude-code"`, `/` command prefix, `allowed-tools: Bash(node .claude/skills/impeccable/scripts/*)`, frontmatter/prose referencing `.claude/skills/impeccable` paths); the `.agents/` tree targets the generic/Codex-style harness (`IMPECCABLE_PROVIDER_ID = "agents"`, `$` command prefix, references to `.agents/skills/impeccable` paths, plus an `agents/` subdirectory of three `.toml` role files and an `openai.yaml` that `.claude/`'s tree doesn't have at all). Per the fix-round instructions, stopped without deleting or symlinking anything; both trees left in place. This needs a human/PM decision, not a PG judgment call.
 - Files touched: `AGENTS.md`, `biome.json`, `.gitignore`, `docs/progress.md` (this entry). No `.claude/skills/impeccable` or `.agents/skills/impeccable` changes.
 - Test/build status: N/A — documentation/config-only. Verified via `git status --short`, `git check-ignore -v .env.production .env.example`, `test -f .claude/skills/impeccable/scripts/hook.mjs && node --check .claude/skills/impeccable/scripts/hook.mjs` (hook resolves and passes syntax check unchanged), and `diff -rq` between the two impeccable trees (29 files differ + one extra directory, not counted as identical). No commits, no pushes, no branches.
+
+## [29/07/26] — Wave 1: Toolchain Foundation And Canonical Docs
+
+**Task 1 — Toolchain And Workspace Foundation** (Codex worker, gpt-5.6-terra).
+Root manifest with Bun workspaces, `tsconfig.base.json` (strict, `noUncheckedIndexedAccess`, bundler resolution, `verbatimModuleSyntax`), ten workspace stubs under `@build-my-deck/*` (`packages/{deck-schema,render,templates,providers,pipeline,validate,export,editor}` + `apps/{web,api}`), pre-created shared barrels and API route mounts so later waves never collide on root files, full iteration-1 dependency set installed, `.husky/` hooks restored (`commit-msg`, `pre-commit`, guarded graphify `post-commit`), `.env.example` expanded with blank names only, `biome.json` ignore extended with `**/dist/**`.
+Verified: `bun pm ls` lists all ten workspaces and no `apps/cli`; `bun install --frozen-lockfile` exit 0; `bunx tsc --noEmit -p tsconfig.base.json` exit 0; `bunx biome check .` exit 0 over 41 files; commitlint accepts a valid subject and rejects an invalid one; `git check-ignore` confirms `.env`, `.env.development`, `.env.production` ignored.
+Note: the first attempt was blocked because Codex's `workspace-write` sandbox refuses registry network access. Resumed with `-c sandbox_workspace_write.network_access=true`. **Any future Codex worker needing network (tasks 6A, 6B, 16 hit live Qwen and Gemini) must set that flag** or it fails in a way that looks like a code fault rather than a sandbox one.
+Open for QA: Chromium was installed to `/tmp/build-my-deck-playwright-browsers` via `PLAYWRIGHT_BROWSERS_PATH`, not the default cache. That location is ephemeral and unreferenced by repo config.
+
+**Task 2 — Canonical Product, Architecture, And Design Records** (Claude programmer).
+Wrote `docs/prd.md`, `docs/trd.md` (Q1-Q16 recorded as settled outcomes, the five Verified Findings, and both first-class architectural properties), `docs/PRODUCT.md` and `docs/DESIGN.md` (editor chrome only — the generated decks' design systems are code and belong to task 7).
+Surgically updated `AGENTS.md`: the stale "users supply their own API key" premise replaced with the hosted shared-pool posture; a third hard product constraint added for GitHub identity, private-by-default decks and physical deletion.
+Follow-up approved by the PM after the programmer flagged rather than improvised: `## Architecture` ("Not yet designed") and `## Tech Stack` ("Undecided") replaced with settled orientation pointing at `docs/trd.md` as canonical, and the Critical Do-Not "do not invent a stack decision" — which had become a direct contradiction of the TRD — replaced with "do not silently deviate from the architecture recorded in `docs/trd.md`".
+
+Gate 1 closed this session across three planning rounds (initial plan, blind Codex peer consult + synthesis, hosted-posture reversal). Decisions recorded in `docs/plan.md` under `## Settled At Gate 1`.
+
+### Wave 1 — QA Fix Rounds
+
+Two QA rejects, then Approve with notes. All findings resolved; the loop cap was reached and the human authorized continuing (new findings each pass, not repeats).
+
+**Round 1 fixes.** `bun run build` argument order (`bun run --filter '*' build`); `jsx: react-jsx` plus a widened root `include` — the prior config silently skipped every `.tsx`, so the root typecheck would have gone *falsely green* from task 8 onward; `zod` bumped `^3` → `^4` (4.4.3) because the recorded Gate-1 rationale for choosing Zod over TypeBox rests on `z.toJSONSchema`, absent in v3; eight cross-workspace `workspace:*` edges pre-declared under PM authorization so no later wave writes `bun.lock`; `test-results/` and `playwright-report/` gitignored; `PORT` and `DATA_DIR` added to `.env.example` with `DATA_DIR` recorded in `docs/trd.md` as the canonical name; PRD constraint count reconciled with `AGENTS.md`; `--bmd-editor-danger` raised to `#F0788A` (4.39:1 → 5.74:1, WCAG AA).
+
+Chromium was installed to the default cache by the PM, not the worker: Codex's `workspace-write` sandbox cannot write outside the workspace, which is why the first attempt diverted to `/tmp`. Verified by a real `chromium.launch()` and a `%PDF-` from `page.pdf()`.
+
+**Round 2 fixes.** Biome regression from the multi-line `include` collapsed; six further workspace edges added for waves 4-6; `playwright.config.ts` created.
+
+**Test-runner convention (PM decision).** Playwright tests are `*.pw.ts`, unit tests `*.test.ts`. `.spec.ts` was rejected after QA printed Bun's own collection glob — `**{.test,.spec,_test_,_spec_}.{js,ts,jsx,tsx}` — proving `bun test` claims `.spec` too, so the conventional choice would not have separated the runners. Task 16's declared `slice-1.spec.ts` carried the same latent collision.
+
+**Plan amendments made by the PM** (recording decisions, not implementing): `playwright.config.ts` added to task 1's scope; `.pw.ts` files declared for tasks 5, 10, 12 and 16; and a new rule assigning own-package barrel ownership — every workspace's bare-string `exports` admits no subpaths, so barrels must grow with their package, and "never edited later" applies to root files only. Verified collision-free against the wave plan.
+
+**Wave 2 cleared to dispatch** by QA: tasks 4, 5 and 6A have disjoint scopes and none is forced onto `bun.lock` or a root config.

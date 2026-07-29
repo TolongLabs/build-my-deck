@@ -10,10 +10,11 @@
 
 Target users are **hackathon participants**: people with a working project, a Devpost draft or README, a few screenshots, and not enough hours before the pitch. The deck must be judge-ready — narrative, layout, typography, diagrams and imagery — not a themed bullet dump.
 
-Two hard product constraints:
+Three hard product constraints:
 
-1. **LLM-provider heterogeneous.** Qwen, Gemini, OpenAI, Anthropic and others are pluggable behind one interface; the user supplies an API key and the pipeline runs. No provider-specific behavior may leak into the generation stages. Some providers additionally offer image generation (e.g. Imagen, GPT-Image) — image capability is a per-provider **capability flag**, not an assumption.
+1. **LLM-provider heterogeneous.** Qwen, Gemini, OpenAI, Anthropic and others are pluggable behind one interface. The product is **hosted**: users call a TolongLabs-operated service funded by TolongLabs' shared provider pool, and provider credentials never leave the server — no "user supplies an API key" posture ships in iteration 1. No provider-specific behavior may leak into the generation stages. Some providers additionally offer image generation (e.g. Imagen, GPT-Image) — image capability is a per-provider **capability flag**, not an assumption. A future bring-your-own-key path is reserved but deliberately not chosen yet (see `docs/trd.md`).
 2. **Editable output.** Generated slides are not a terminal artifact. Every element must remain individually selectable, movable and re-stylable in the editor, and re-exportable.
+3. **Private by default, owned by the user.** Every user signs in with GitHub OAuth against a stable local owner identity. A deck is visible only to its owner; sharing and any public gallery are explicit, opt-in and land later on top of that ownership model. Account and deck deletion is physical — no soft-delete flag is permitted anywhere in the system.
 
 **Prior art in this repo's lineage** (read before designing the renderer — these are the quality bar, not throwaways):
 
@@ -27,15 +28,15 @@ The common shape across all three: **slides are absolutely-positioned elements i
 
 ## Architecture
 
-**Not yet designed.** The renderer/editor architecture — in particular whether the editor is canvas-based (Konva.js and peers) or DOM-based, and whether one document model can serve both the generator and the editor — is the first planning decision and is explicitly open. Do not assume a stack; `planner` decides it at Gate 1 and it is recorded in `docs/decisions.md`.
+**Settled at Gate 1; canonical in `docs/trd.md`.** Orientation only, not a restatement: absolutely-positioned DOM in a fixed 1920×1080 stage (`<deck-stage>`) is the renderer; a versioned, Zod-defined JSON scene graph (`packages/deck-schema`) is the one document model serving the generator, the editor, the validator and export; deployment is one hosted service (`apps/web` + `apps/api`) in a single container.
 
-Once designed, architecture lives in `docs/trd.md` (canonical). Do not create `docs/architecture.md`.
+Architecture lives in `docs/trd.md` (canonical) — read it rather than re-deriving decisions here, so this section never drifts into a second, competing copy. Do not create `docs/architecture.md`.
 
 ---
 
 ## Tech Stack
 
-**Undecided.** Bun is the default JS package manager and script runner for this machine. Everything else — framework, editor library, rendering strategy, export path, provider SDK layer — is a Gate 1 decision.
+**Settled at Gate 1.** Bun (package manager, script runner, test runner) · TypeScript strict · React + Vite for `apps/web` · Hono on Bun for `apps/api` · Biome for lint/format · Playwright for measurement/validation and PDF export · Zod for every boundary schema. See `docs/trd.md` for the full component breakdown and the reasoning behind each choice — this section is orientation, not the rationale.
 
 ---
 
@@ -69,7 +70,7 @@ Once designed, architecture lives in `docs/trd.md` (canonical). Do not create `d
 - **Log progress.** After each task, PG appends a dated entry to `docs/progress.md` and ticks `docs/plan.md`. Exception — **parallel waves**: PGs in a wave return summaries instead, and the PM does the ticking/logging.
 - **Documentation hygiene.** Title Case applies to headings, subheadings, labels, bullet-point lead-ins and table headers; full sentences and commit subjects stay in normal sentence case.
 - **README vs TRD.** README and `docs/trd.md` may both describe architecture; they differ in depth and audience, not in subject. `README` carries the high-level narrative view — the WHATs, HOWs and WHYs, plus diagrams for notable components and pipelines — written for readers; `docs/trd.md` carries the canonical implementation-level technical reference, written for developers.
-- **No secrets in repo.** `.env.example` committed, `.env` gitignored. **This is load-bearing here** — the product's whole premise is users pasting their own provider API keys. Never log, echo, or commit a key; never write one into a fixture, test, or generated deck.
+- **No secrets in repo.** `.env.example` committed, `.env` gitignored. **This is load-bearing here** — TolongLabs' Qwen and Gemini credentials are server-only secrets funding the shared pool that every user's run draws from; a future bring-your-own-key path is reserved but not implemented, so no user-supplied key exists to leak either. Never log, echo, or commit a key; never write one into a fixture, test, or generated deck.
 
 ---
 
@@ -79,7 +80,7 @@ Once designed, architecture lives in `docs/trd.md` (canonical). Do not create `d
 - **Do not** commit or push without explicit human authorization (Gate 2).
 - **Do not** create `docs/architecture.md` — architecture lives in `docs/trd.md` if present.
 - **Do not** hardcode a provider. Any code path that names Qwen, Gemini, OpenAI or Anthropic outside the provider-adapter layer is a defect.
-- **Do not** invent a stack decision. The editor/renderer architecture is an open Gate 1 question — surface it, don't settle it in an implementation diff.
+- **Do not** silently deviate from the architecture recorded in `docs/trd.md`. Surface a proposed change for a new planning pass — don't settle it in an implementation diff.
 
 ---
 
