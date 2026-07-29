@@ -35,3 +35,9 @@ Example:
 - 2026-07-29 — test runners: *.pw.ts for Playwright, *.test.ts for bun test — bun test's glob claims .spec as well as .test, so the conventional .spec.ts separates nothing
 - 2026-07-29 — schema library: zod pinned ^4 — v4 emits JSON Schema natively via z.toJSONSchema, which is the whole reason Zod was chosen over TypeBox
 - 2026-07-29 — Codex workers: network is off by default under workspace-write; tasks hitting a registry or a live provider need sandbox_workspace_write.network_access=true — otherwise the failure looks like a code fault
+- 2026-07-29 — reference fields: catalogRef/assetId constrained by grammar, not convention — typed as bare strings they accepted data: URIs, path traversal and external URLs, so D4's "structural refusal" was nominal
+- 2026-07-29 — 429 classification: quota_exhausted distinct from rate_limit in both adapters, defaulting to quota_exhausted when ambiguous — misreading a drained pool as transient costs unbounded spend, the reverse costs one false message
+- 2026-07-29 — resource gates: prefer promise-based self-completion-aware APIs (decode()) over event listeners — a listener cannot resolve for a resource that completed before the component upgraded
+- 2026-07-29 — Playwright origin: centralized as a webServer + baseURL in playwright.config.ts — page.setContent() alone leaves an opaque origin where every Storage API throws, and per-file fixtures would have become five drifting copies
+- 2026-07-29 — template capacity assertion lives in task 10, not 7 or 8 — templates cannot import render without a cycle, and 7/8 run concurrently so task 8 would assert over an empty catalog
+- 2026-07-29 — test discipline: a test must be shown to fail against the unfixed code before it counts as passing — three wave-2 tests validated their own workarounds and all looked green
